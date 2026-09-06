@@ -81,6 +81,49 @@ export class OpenAIResponsesPerceptionModel implements PerceptionModel {
   }
 }
 
+/**
+ * OpenRouter's OpenAI-compatible Chat Completions provider. Same PerceptionModel boundary, same
+ * response schema and validation as OpenAIResponsesPerceptionModel above — only the transport,
+ * endpoint, and request/response shape differ. Defaults to `openrouter/free`, OpenRouter's
+ * zero-cost router, which filters to free models that support image input and structured JSON
+ * outputs, so no paid credits are required.
+ */
+export class OpenRouterChatCompletionsPerceptionModel implements PerceptionModel {
+  private readonly apiKey: string | undefined;
+  private readonly model: string;
+  private readonly fetchImpl: typeof fetch;
+  constructor(
+    apiKey = process.env.OPENROUTER_API_KEY,
+    model = process.env.OPENROUTER_MODEL ?? "openrouter/free",
+    fetchImpl: typeof fetch = fetch
+  ) {
+    this.apiKey = apiKey;
+    this.model = model;
+    this.fetchImpl = fetchImpl;
+  }
+
+  async observe(request: PerceptionModelRequest): Promise<PerceptionModelResult> {
+    if (!this.apiKey) throw new Error("OPENROUTER_API_KEY is required to run the real Perception Agent via OpenRouter.");
+    const content = request.content.map(part => part.type === "input_text"
+      ? { type: "text" as const, text: part.text }
+      : { type: "image_url" as const, image_url: { url: part.image_url, detail: part.detail } });
+    const response = await this.fetchImpl("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: { "authorization": `Bearer ${this.apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        model: this.model,
+        messages: [{ role: "system", content: request.instructions }, { role: "user", content }],
+        response_format: { type: "json_schema", json_schema: { name: "perception_observations", strict: true, schema: responseSchema } }
+      })
+    });
+    if (!response.ok) throw new Error(`Perception model request failed (${response.status}): ${await response.text()}`);
+    const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+    const outputText = payload.choices?.[0]?.message?.content;
+    if (!outputText) throw new Error("Perception model returned no structured output.");
+    return validatePerceptionResult(JSON.parse(outputText));
+  }
+}
+
 export class RealPerceptionAgent implements PerceptionAgent {
   private readonly model: PerceptionModel;
   constructor(model: PerceptionModel) { this.model = model; }

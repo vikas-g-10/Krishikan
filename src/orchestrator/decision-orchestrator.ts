@@ -2,9 +2,9 @@ import { randomUUID } from "node:crypto";
 import { ToolFieldContextAgent, type FieldContextAgent } from "../agents/field-context-agent.ts";
 import { ToolRiskEconomicsAgent, type RiskEconomicsAgent } from "../agents/risk-economics-agent.ts";
 import type { PerceptionAgent, Reviewer, Synthesizer } from "../agents/mocks.ts";
-import { OpenAIResponsesPerceptionModel, RealPerceptionAgent } from "../agents/perception-agent.ts";
-import { OpenAIResponsesDecisionSynthesizerModel, RealDecisionSynthesizerAgent } from "../agents/decision-synthesizer-agent.ts";
-import { OpenAIResponsesDecisionReviewerModel, RealAdversarialReviewerAgent } from "../agents/adversarial-reviewer-agent.ts";
+import { OpenAIResponsesPerceptionModel, OpenRouterChatCompletionsPerceptionModel, RealPerceptionAgent, type PerceptionModel } from "../agents/perception-agent.ts";
+import { OpenAIResponsesDecisionSynthesizerModel, OpenRouterChatCompletionsDecisionSynthesizerModel, RealDecisionSynthesizerAgent, type DecisionSynthesizerModel } from "../agents/decision-synthesizer-agent.ts";
+import { OpenAIResponsesDecisionReviewerModel, OpenRouterChatCompletionsDecisionReviewerModel, RealAdversarialReviewerAgent, type DecisionReviewerModel } from "../agents/adversarial-reviewer-agent.ts";
 import type { DecisionMemory } from "../memory/decision-memory.ts";
 import { SafetyEngine } from "../rules/safety-engine.ts";
 import { mockTools } from "../tools/seeded-tools.ts";
@@ -60,18 +60,29 @@ export class DecisionOrchestrator {
   private completeRequestMoreData(state: CaseState, now: Date): DecisionResponse { this.transition(state, "REQUEST_MORE_DATA"); state.proposedDecision = { action: "SEEK_EXPERT_CONFIRMATION", reason: "Please provide a clearer image or fuller symptom description before a disease-specific recommendation.", evidence: [], confidence: 0.4, constraints: [] }; const decision = this.record(state, now, "SAFE_FALLBACK"); this.transition(state, "DONE"); return { caseState: state, decision }; }
 }
 
+// Phase 14.2: provider selection. MODEL_PROVIDER selects which real model backs each agent's model
+// boundary; defaulting to "openai" preserves prior behavior exactly when unset. Setting
+// MODEL_PROVIDER=openrouter (with OPENROUTER_API_KEY set) runs the same agents against OpenRouter's
+// free, OpenAI-compatible Chat Completions API instead, requiring no OpenAI credits. Neither the
+// agent interfaces/contracts, the Safety Engine, nor the Adversarial Reviewer's deterministic
+// backstops are affected by this selection.
+const modelProvider = process.env.MODEL_PROVIDER ?? "openai";
+function defaultPerceptionModel(): PerceptionModel { return modelProvider === "openrouter" ? new OpenRouterChatCompletionsPerceptionModel() : new OpenAIResponsesPerceptionModel(); }
+function defaultSynthesizerModel(): DecisionSynthesizerModel { return modelProvider === "openrouter" ? new OpenRouterChatCompletionsDecisionSynthesizerModel() : new OpenAIResponsesDecisionSynthesizerModel(); }
+function defaultReviewerModel(): DecisionReviewerModel { return modelProvider === "openrouter" ? new OpenRouterChatCompletionsDecisionReviewerModel() : new OpenAIResponsesDecisionReviewerModel(); }
+
 export function createDefaultOrchestrator(
   memory: DecisionMemory,
-  perception: PerceptionAgent = new RealPerceptionAgent(new OpenAIResponsesPerceptionModel()),
+  perception: PerceptionAgent = new RealPerceptionAgent(defaultPerceptionModel()),
   context: FieldContextAgent = new ToolFieldContextAgent(mockTools, mockTools),
   riskEconomics: RiskEconomicsAgent = new ToolRiskEconomicsAgent(mockTools),
   // Phase 12.4: the Decision Synthesizer is REAL by default. The deterministic Safety Engine
   // remains unchanged and authoritative.
-  synthesizer: Synthesizer = new RealDecisionSynthesizerAgent(new OpenAIResponsesDecisionSynthesizerModel(), mockTools),
+  synthesizer: Synthesizer = new RealDecisionSynthesizerAgent(defaultSynthesizerModel(), mockTools),
   // Phase 12.5: the Adversarial Reviewer is now REAL by default. It never overrides a deterministic
   // Safety Engine BLOCK — that veto and its required changes are derived only from the Safety Engine's
   // own violations, never from the model.
-  reviewer: Reviewer = new RealAdversarialReviewerAgent(new OpenAIResponsesDecisionReviewerModel())
+  reviewer: Reviewer = new RealAdversarialReviewerAgent(defaultReviewerModel())
 ): DecisionOrchestrator {
   return new DecisionOrchestrator({ context, riskEconomics, safety: new SafetyEngine(mockTools), memory, perception, synthesizer, reviewer });
 }
