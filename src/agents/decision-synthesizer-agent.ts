@@ -23,6 +23,27 @@ const instructions = `You are the KRISHI-NEXUS Decision Synthesizer. Produce one
 const actions: readonly Action[] = ["MONITOR", "CULTURAL_ACTION", "BIOLOGICAL_INTERVENTION", "APPROVED_GREEN_INTERVENTION", "WAIT_FOR_SAFE_WEATHER_WINDOW", "SEEK_EXPERT_CONFIRMATION"];
 const interventionActions = new Set<Action>(["CULTURAL_ACTION", "BIOLOGICAL_INTERVENTION", "APPROVED_GREEN_INTERVENTION"]);
 
+/**
+ * Raised when a provider responds successfully (HTTP 200) but the response body is not the
+ * required structured JSON — e.g. plain-text prose or a shortcut safety verdict instead of a
+ * decision_synthesis JSON object. Distinguished from a generic Error/SyntaxError so callers can
+ * treat this as a controlled, expected provider-format failure rather than an unhandled parse
+ * error. Mirrors PerceptionProviderFormatError in perception-agent.ts.
+ */
+export class DecisionSynthesizerProviderFormatError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DecisionSynthesizerProviderFormatError";
+  }
+}
+
+// OpenRouter's free-tier models are considerably less reliable at honoring response_format:
+// json_schema than OpenAI's Responses API. This reinforcement is appended only to the system
+// message sent to OpenRouter — it does not alter the shared `instructions` text used by the
+// OpenAI Responses adapter — and repeats, in the most explicit terms, exactly which keys must be
+// present, which values are legal, and that no other prose is allowed.
+const OPENROUTER_SYNTHESIS_JSON_SHAPE_REINFORCEMENT = `Your entire reply MUST be ONE JSON object and NOTHING else: no prose, no markdown, no code fences, no safety commentary, no explanatory text before or after the JSON. The JSON object MUST contain exactly these top-level keys, every time, with no keys added and no keys omitted: "action", "interventionId", "reason", "reasoningSummary", "evidence", "confidence", "constraints", "uncertainties", "missingData". "action" must be exactly one of the supplied allowed action enum values. "interventionId" must be null when action is not an intervention action, and when it is not null it must be exactly one of the ids in the supplied vettedInterventions. Do not recommend, prescribe, name, or give a dosage, product, or chemical treatment anywhere in the response. "constraints" must exactly preserve the supplied negative constraints — do not add, remove, or reword any of them.`;
+
 const responseSchema = {
   type: "object",
   additionalProperties: false,
@@ -103,7 +124,11 @@ export class OpenRouterChatCompletionsDecisionSynthesizerModel implements Decisi
       headers: { "authorization": `Bearer ${this.apiKey}`, "content-type": "application/json" },
       body: JSON.stringify({
         model: this.model,
-        messages: [{ role: "system", content: request.instructions }, { role: "user", content: JSON.stringify(request.state) }],
+        messages: [
+          { role: "system", content: `${request.instructions}\n\n${OPENROUTER_SYNTHESIS_JSON_SHAPE_REINFORCEMENT}` },
+          { role: "user", content: JSON.stringify(request.state) },
+          { role: "user", content: "Reminder: reply with only the required decision_synthesis JSON object using exactly the required keys. No other text." }
+        ],
         response_format: { type: "json_schema", json_schema: { name: "decision_synthesis", strict: true, schema: responseSchema } }
       })
     });
@@ -111,7 +136,7 @@ export class OpenRouterChatCompletionsDecisionSynthesizerModel implements Decisi
     const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
     const outputText = payload.choices?.[0]?.message?.content;
     if (!outputText) throw new Error("Decision Synthesizer model returned no structured output.");
-    return JSON.parse(extractJsonPayload(outputText));
+    return parseDecisionSynthesisJson(outputText);
   }
 }
 
@@ -193,4 +218,23 @@ function containsTreatmentLanguage(value: string): boolean {
 function extractJsonPayload(text: string): string {
   const fenced = text.trim().match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
   return fenced ? fenced[1] : text;
+}
+
+// Some OpenRouter-hosted free models occasionally ignore response_format: json_schema entirely and
+// reply with unrelated prose or a shortcut safety verdict (e.g. "User Safety: safe") instead of the
+// required decision_synthesis JSON. A raw JSON.parse on that text throws an uninformative
+// SyntaxError that would otherwise leak as the production error. Convert that failure into a
+// controlled, explicit DecisionSynthesizerProviderFormatError instead — no proposal is fabricated
+// from the text, and a successful parse is still passed through to validateProposal unchanged.
+// Used only inside OpenRouterChatCompletionsDecisionSynthesizerModel; mirrors parsePerceptionJson
+// in perception-agent.ts.
+function parseDecisionSynthesisJson(outputText: string): unknown {
+  const candidate = extractJsonPayload(outputText);
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    throw new DecisionSynthesizerProviderFormatError(
+      `Decision Synthesizer provider did not return the required structured JSON output (received: ${JSON.stringify(outputText.slice(0, 200))}).`
+    );
+  }
 }

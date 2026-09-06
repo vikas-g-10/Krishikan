@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { OpenRouterChatCompletionsPerceptionModel, PerceptionProviderFormatError, type PerceptionModelRequest } from "../src/agents/perception-agent.ts";
-import { OpenRouterChatCompletionsDecisionSynthesizerModel, type DecisionSynthesizerRequest } from "../src/agents/decision-synthesizer-agent.ts";
+import { OpenRouterChatCompletionsDecisionSynthesizerModel, DecisionSynthesizerProviderFormatError, type DecisionSynthesizerRequest } from "../src/agents/decision-synthesizer-agent.ts";
 import { OpenRouterChatCompletionsDecisionReviewerModel, type DecisionReviewerRequest } from "../src/agents/adversarial-reviewer-agent.ts";
 import { tomatoSeed } from "../src/tools/seeded-tools.ts";
 
@@ -84,7 +84,7 @@ test("Decision Synthesizer: posts to the Chat Completions endpoint with json_sch
   assert.equal(seenUrl, "https://openrouter.ai/api/v1/chat/completions");
   assert.equal(seenBody.model, "openrouter/free");
   assert.equal(seenBody.response_format.type, "json_schema");
-  assert.equal(seenBody.messages[0].content, "synthesize");
+  assert.match(seenBody.messages[0].content, /^synthesize/);
   assert.deepEqual(parsed, proposal);
 });
 
@@ -185,6 +185,72 @@ test("Decision Synthesizer: strips a Markdown code fence before parsing", async 
   const request = { instructions: "synthesize", state: {} } as unknown as DecisionSynthesizerRequest;
   const parsed = await model.synthesize(request);
   assert.deepEqual(parsed, proposal);
+});
+
+// Regression coverage for the OpenRouter free model's decision_synthesis schema-drift failure mode,
+// mirroring the Perception Agent's provider-format hardening.
+
+test("Decision Synthesizer: rejects a plain-text, non-JSON reply with a controlled DecisionSynthesizerProviderFormatError instead of a raw JSON.parse SyntaxError", async () => {
+  const model = new OpenRouterChatCompletionsDecisionSynthesizerModel("test-key", undefined, fakeChatCompletionsFetch("User Safety: safe"));
+  const request = { instructions: "synthesize", state: {} } as unknown as DecisionSynthesizerRequest;
+  await assert.rejects(
+    () => model.synthesize(request),
+    (error: unknown) => {
+      assert.ok(error instanceof DecisionSynthesizerProviderFormatError);
+      assert.ok(!(error instanceof SyntaxError));
+      assert.match((error as Error).message, /did not return the required structured JSON output/);
+      return true;
+    }
+  );
+});
+
+test("Decision Synthesizer: rejects well-formed JSON that omits the required schema keys, rather than fabricating or accepting it", async () => {
+  const nonSchemaJson = JSON.stringify({ userSafety: "safe", note: "No decision" });
+  const model = new OpenRouterChatCompletionsDecisionSynthesizerModel("test-key", undefined, fakeChatCompletionsFetch(nonSchemaJson));
+  const request = { instructions: "synthesize", state: {} } as unknown as DecisionSynthesizerRequest;
+  // parseDecisionSynthesisJson succeeds (it is valid JSON), so this reaches the model boundary's
+  // return value unchanged; validateProposal (unmodified, exercised via RealDecisionSynthesizerAgent
+  // elsewhere) is what rejects the wrong shape. Here we confirm the OpenRouter adapter itself does
+  // not fabricate or coerce the missing keys and passes the object through as-is.
+  const parsed = await model.synthesize(request);
+  assert.deepEqual(parsed, { userSafety: "safe", note: "No decision" });
+});
+
+test("Decision Synthesizer: the OpenRouter system message contains the JSON-shape reinforcement", async () => {
+  let seenBody: any;
+  const proposal = { action: "MONITOR", interventionId: null, reason: "seeded", reasoningSummary: "seeded", evidence: [], confidence: 0.8, constraints: [], uncertainties: [], missingData: [] };
+  const model = new OpenRouterChatCompletionsDecisionSynthesizerModel("test-key", undefined, fakeChatCompletionsFetch(JSON.stringify(proposal), (_url, init) => {
+    seenBody = JSON.parse(String(init.body));
+  }));
+  const request = { instructions: "base synthesis instructions", state: { negativeConstraints: [] } } as unknown as DecisionSynthesizerRequest;
+  await model.synthesize(request);
+  assert.match(seenBody.messages[0].content, /base synthesis instructions/);
+  assert.match(seenBody.messages[0].content, /"action"/);
+  assert.match(seenBody.messages[0].content, /"interventionId"/);
+  assert.match(seenBody.messages[0].content, /"missingData"/);
+  assert.match(seenBody.messages[0].content, /no prose/i);
+  assert.match(seenBody.messages[0].content, /no markdown/i);
+  assert.match(seenBody.messages[0].content, /no code fences/i);
+  assert.match(seenBody.messages[0].content, /vettedInterventions/);
+  assert.match(seenBody.messages[0].content, /negative constraints/i);
+});
+
+test("Decision Synthesizer: a final user-role reminder is appended, and the original serialized request.state is preserved unchanged", async () => {
+  let seenBody: any;
+  const proposal = { action: "MONITOR", interventionId: null, reason: "seeded", reasoningSummary: "seeded", evidence: [], confidence: 0.8, constraints: [], uncertainties: [], missingData: [] };
+  const state = { negativeConstraints: ["Do not spray during rain."], vettedInterventions: [] };
+  const model = new OpenRouterChatCompletionsDecisionSynthesizerModel("test-key", undefined, fakeChatCompletionsFetch(JSON.stringify(proposal), (_url, init) => {
+    seenBody = JSON.parse(String(init.body));
+  }));
+  const request = { instructions: "synthesize", state } as unknown as DecisionSynthesizerRequest;
+  await model.synthesize(request);
+  assert.equal(seenBody.messages.length, 3);
+  assert.equal(seenBody.messages[1].role, "user");
+  assert.equal(seenBody.messages[1].content, JSON.stringify(state));
+  assert.equal(seenBody.messages[2].role, "user");
+  assert.equal(seenBody.messages[2].content, "Reminder: reply with only the required decision_synthesis JSON object using exactly the required keys. No other text.");
+  assert.equal(seenBody.response_format.type, "json_schema");
+  assert.equal(seenBody.response_format.json_schema.name, "decision_synthesis");
 });
 
 test("Adversarial Reviewer: strips a Markdown code fence before parsing", async () => {
