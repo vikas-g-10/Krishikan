@@ -190,6 +190,71 @@ test("Decision Synthesizer: strips a Markdown code fence before parsing", async 
 // Regression coverage for the OpenRouter free model's decision_synthesis schema-drift failure mode,
 // mirroring the Perception Agent's provider-format hardening.
 
+// Regression coverage for the production failure: OpenRouter's free-tier router can select a
+// reasoning model whose Chat Completions response leaves `message.content` empty and puts the
+// actual output in `message.reasoning` or `message.reasoning_details` instead. Previously this was
+// misreported as "Decision Synthesizer model returned no structured output." even though the
+// provider responded successfully with HTTP 200.
+
+function fakeReasoningFetch(message: Record<string, unknown>): typeof fetch {
+  return (async () => new Response(JSON.stringify({ choices: [{ message }] }), { status: 200, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
+}
+
+test("Decision Synthesizer: falls back to message.reasoning when message.content is empty (the actual production OpenRouter reasoning-model response shape)", async () => {
+  const proposal = { action: "MONITOR", interventionId: null, reason: "seeded", reasoningSummary: "seeded", evidence: [], confidence: 0.8, constraints: [], uncertainties: [], missingData: [] };
+  const model = new OpenRouterChatCompletionsDecisionSynthesizerModel("test-key", undefined, fakeReasoningFetch({ content: "", reasoning: JSON.stringify(proposal) }));
+  const request = { instructions: "synthesize", state: {} } as unknown as DecisionSynthesizerRequest;
+  const parsed = await model.synthesize(request);
+  assert.deepEqual(parsed, proposal);
+});
+
+test("Decision Synthesizer: falls back to message.reasoning when message.content is null", async () => {
+  const proposal = { action: "MONITOR", interventionId: null, reason: "seeded", reasoningSummary: "seeded", evidence: [], confidence: 0.8, constraints: [], uncertainties: [], missingData: [] };
+  const model = new OpenRouterChatCompletionsDecisionSynthesizerModel("test-key", undefined, fakeReasoningFetch({ content: null, reasoning: JSON.stringify(proposal) }));
+  const request = { instructions: "synthesize", state: {} } as unknown as DecisionSynthesizerRequest;
+  const parsed = await model.synthesize(request);
+  assert.deepEqual(parsed, proposal);
+});
+
+test("Decision Synthesizer: falls back to message.reasoning_details (array of segments) when both content and reasoning are absent", async () => {
+  const proposal = { action: "MONITOR", interventionId: null, reason: "seeded", reasoningSummary: "seeded", evidence: [], confidence: 0.8, constraints: [], uncertainties: [], missingData: [] };
+  const json = JSON.stringify(proposal);
+  const model = new OpenRouterChatCompletionsDecisionSynthesizerModel("test-key", undefined, fakeReasoningFetch({
+    reasoning_details: [{ text: json.slice(0, 10) }, { text: json.slice(10) }]
+  }));
+  const request = { instructions: "synthesize", state: {} } as unknown as DecisionSynthesizerRequest;
+  const parsed = await model.synthesize(request);
+  assert.deepEqual(parsed, proposal);
+});
+
+test("Decision Synthesizer: content still takes priority over reasoning when both are present", async () => {
+  const proposal = { action: "MONITOR", interventionId: null, reason: "from-content", reasoningSummary: "seeded", evidence: [], confidence: 0.8, constraints: [], uncertainties: [], missingData: [] };
+  const model = new OpenRouterChatCompletionsDecisionSynthesizerModel("test-key", undefined, fakeReasoningFetch({ content: JSON.stringify(proposal), reasoning: "some chain-of-thought text, not JSON" }));
+  const request = { instructions: "synthesize", state: {} } as unknown as DecisionSynthesizerRequest;
+  const parsed = await model.synthesize(request);
+  assert.deepEqual(parsed, proposal);
+});
+
+test("Decision Synthesizer: still throws 'no structured output' when content, reasoning, and reasoning_details are all empty", async () => {
+  const model = new OpenRouterChatCompletionsDecisionSynthesizerModel("test-key", undefined, fakeReasoningFetch({ content: "", reasoning: "", reasoning_details: [] }));
+  const request = { instructions: "synthesize", state: {} } as unknown as DecisionSynthesizerRequest;
+  await assert.rejects(() => model.synthesize(request), /Decision Synthesizer model returned no structured output\./);
+});
+
+test("Decision Synthesizer: malformed JSON surfaced via message.reasoning still fails safely with a controlled DecisionSynthesizerProviderFormatError", async () => {
+  const model = new OpenRouterChatCompletionsDecisionSynthesizerModel("test-key", undefined, fakeReasoningFetch({ content: "", reasoning: "User Safety: safe" }));
+  const request = { instructions: "synthesize", state: {} } as unknown as DecisionSynthesizerRequest;
+  await assert.rejects(
+    () => model.synthesize(request),
+    (error: unknown) => {
+      assert.ok(error instanceof DecisionSynthesizerProviderFormatError);
+      assert.ok(!(error instanceof SyntaxError));
+      assert.match((error as Error).message, /did not return the required structured JSON output/);
+      return true;
+    }
+  );
+});
+
 test("Decision Synthesizer: rejects a plain-text, non-JSON reply with a controlled DecisionSynthesizerProviderFormatError instead of a raw JSON.parse SyntaxError", async () => {
   const model = new OpenRouterChatCompletionsDecisionSynthesizerModel("test-key", undefined, fakeChatCompletionsFetch("User Safety: safe"));
   const request = { instructions: "synthesize", state: {} } as unknown as DecisionSynthesizerRequest;

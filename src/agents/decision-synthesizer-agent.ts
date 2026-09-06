@@ -133,8 +133,8 @@ export class OpenRouterChatCompletionsDecisionSynthesizerModel implements Decisi
       })
     });
     if (!response.ok) throw new Error(`Decision Synthesizer model request failed (${response.status}): ${await response.text()}`);
-    const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-    const outputText = payload.choices?.[0]?.message?.content;
+    const payload = await response.json() as { choices?: Array<{ message?: OpenRouterSynthesizerMessage }> };
+    const outputText = extractOpenRouterMessageText(payload.choices?.[0]?.message);
     if (!outputText) throw new Error("Decision Synthesizer model returned no structured output.");
     return parseDecisionSynthesisJson(outputText);
   }
@@ -210,6 +210,33 @@ function validateProposal(value: unknown, state: CaseState, vetted: Intervention
 
 function containsTreatmentLanguage(value: string): boolean {
   return /\b(recommend|prescribe|apply|spray|treat(?:ment)?|dosage|dose|\d+(?:\.\d+)?\s*(?:ml|l|lit(?:re|er)s?|g|kg|ppm)|fungicide|pesticide|herbicide|insecticide|chemical|mancozeb|copper(?:\s+sulfate)?|sulfur|neem)\b/i.test(value);
+}
+
+// Shape of the Chat Completions `message` object as actually returned by OpenRouter, including the
+// reasoning-token fields that plain OpenAI-compatible typings omit.
+interface OpenRouterSynthesizerMessage {
+  content?: string | null;
+  reasoning?: string | null;
+  reasoning_details?: Array<{ text?: string | null; summary?: string | null }> | null;
+}
+
+// Some free OpenRouter models routed via `openrouter/free` are reasoning models. For these, the
+// Chat Completions response can come back with `message.content` empty (or null) while the model's
+// actual output — including, in practice, the requested decision_synthesis JSON — lands in
+// `message.reasoning` (a plain string) or `message.reasoning_details` (an array of reasoning
+// segments) instead. Previously only `message.content` was read, so any response in this shape was
+// misreported as "Decision Synthesizer model returned no structured output." even though the
+// provider had responded successfully. This does not weaken validation: whatever text is found here
+// still has to pass parseDecisionSynthesisJson and the unchanged validateProposal checks below, so
+// prose, malformed JSON, or the wrong schema are rejected exactly as before.
+function extractOpenRouterMessageText(message: OpenRouterSynthesizerMessage | undefined): string | undefined {
+  if (message?.content) return message.content;
+  if (message?.reasoning) return message.reasoning;
+  const reasoningDetailsText = message?.reasoning_details
+    ?.map(part => part?.text ?? part?.summary)
+    .filter((text): text is string => typeof text === "string" && text.length > 0)
+    .join("\n");
+  return reasoningDetailsText || undefined;
 }
 
 // Some OpenRouter-hosted free models wrap otherwise-valid structured-output JSON in a Markdown code
