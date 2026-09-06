@@ -1,21 +1,33 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { InMemoryDecisionMemory } from "../memory/decision-memory.ts";
-import { mockPerception } from "../agents/mocks.ts";
+import { mockPerception, mockSynthesizer, mockReviewer } from "../agents/mocks.ts";
 import { createDefaultOrchestrator, type DecisionInput, type DecisionOrchestrator } from "../orchestrator/decision-orchestrator.ts";
 
 const memory = new InMemoryDecisionMemory();
-const orchestrator = createDefaultOrchestrator(memory);
+// Exported (in addition to `server` below) purely so tests can exercise and introspect the exact
+// production wiring — e.g. confirming, without any network access, that /api/v1/decisions still
+// resolves to the real, network-calling model boundaries while /api/v1/demo/tomato does not. Not
+// otherwise used outside this module beyond being passed into createRequestHandler below.
+export const orchestrator = createDefaultOrchestrator(memory);
 // The canned /api/v1/demo/tomato scenario has no attached image, so a real, network-calling
 // Perception model can legitimately (and non-deterministically) report confidence below the
 // orchestrator's 0.7 gate, since it cannot visually confirm a symptom from text alone — which
 // stops the workflow at REQUEST_MORE_DATA before Field Context (and therefore the seeded farm/
-// environment/history data) is ever retrieved. The demo endpoint exists to reliably showcase the
-// full pipeline, so it uses the existing deterministic, keyword-matching mockPerception (unchanged,
-// from mocks.ts — not a network call) instead. Every other dependency, including the seeded Field
-// Context tool boundary, the Risk/Economics agent, and the real Decision Synthesizer/Adversarial
-// Reviewer models, is unchanged from createDefaultOrchestrator's usual defaults. The general
-// /api/v1/decisions endpoint is unaffected and still uses the real default Perception model.
-const demoOrchestrator = createDefaultOrchestrator(memory, mockPerception);
+// environment/history data) is ever retrieved. Beyond that, this hackathon demo scenario must
+// reliably reach and showcase the deterministic Safety Engine's rain-vs-foliar veto and the
+// orchestrator's replan-to-WAIT_FOR_SAFE_WEATHER_WINDOW cycle every time — a live third-party model
+// provider's availability, latency, or output variance must never be able to break the demo (this is
+// the exact failure mode that previously surfaced production 500s on this endpoint). For that
+// reason /api/v1/demo/tomato uses the existing deterministic mockPerception, mockSynthesizer, and
+// mockReviewer (all unchanged, from mocks.ts — none of them make a network call or read an API key)
+// in place of the real, OpenRouter/OpenAI-backed Decision Synthesizer and Adversarial Reviewer.
+// Every other dependency — the seeded Field Context tool boundary, the Risk/Economics agent, and the
+// unmodified, deterministic Safety Engine — is unchanged from createDefaultOrchestrator's usual
+// defaults (passing `undefined` below simply selects those existing defaults; it is not a new
+// implementation). The general /api/v1/decisions endpoint (`orchestrator` above) is completely
+// unaffected and still resolves to the real default Perception, Decision Synthesizer, and
+// Adversarial Reviewer model boundaries.
+export const demoOrchestrator = createDefaultOrchestrator(memory, mockPerception, undefined, undefined, mockSynthesizer, mockReviewer);
 const demo: DecisionInput = { farmId: "FARM-001", plotId: "PLOT-A", language: "kn", mode: "DECIDE", farmerText: "Tomato leaves have dark spots and the affected area is increasing." };
 // CORS: allow a browser-based frontend hosted on a different origin (e.g. a Lovable app)
 // to call the existing routes below. This only adds response headers / preflight handling;

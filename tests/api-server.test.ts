@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { createRequestHandler } from "../src/api/server.ts";
+import { createRequestHandler, server, orchestrator, demoOrchestrator } from "../src/api/server.ts";
 import { RealPerceptionAgent, type PerceptionModel } from "../src/agents/perception-agent.ts";
 import { mockPerception } from "../src/agents/mocks.ts";
 import { RealDecisionSynthesizerAgent, type DecisionSynthesizerModel } from "../src/agents/decision-synthesizer-agent.ts";
@@ -153,4 +153,121 @@ test("POST /api/v1/demo/tomato uses the deterministic demo Perception Agent, ret
     assert.ok(payload.caseState.workflow.trace.includes("CONTEXT"), "workflow must proceed to CONTEXT rather than stopping at REQUEST_MORE_DATA");
     assert.ok(!payload.caseState.workflow.trace.includes("REQUEST_MORE_DATA"));
   });
+});
+
+// Regression coverage for the production failure: /api/v1/demo/tomato was returning HTTP 500
+// ("Decision Synthesizer model returned no structured output.") because, unlike mockPerception,
+// the demo orchestrator's Decision Synthesizer and Adversarial Reviewer were still the real,
+// network-calling OpenRouter/OpenAI-backed model boundaries. The tests below exercise the ACTUAL
+// exported production `server`, `orchestrator`, and `demoOrchestrator` from src/api/server.ts
+// (not a locally reconstructed stand-in), with OPENROUTER_API_KEY/OPENAI_API_KEY removed and a
+// fetch stub that fails the test if any network call is attempted, to prove the demo endpoint's
+// production wiring is now fully deterministic while /api/v1/decisions' production wiring is not.
+
+async function withNoProviderCredentials<T>(fn: () => Promise<T>): Promise<T> {
+  const savedOpenRouterKey = process.env.OPENROUTER_API_KEY;
+  const savedOpenAiKey = process.env.OPENAI_API_KEY;
+  delete process.env.OPENROUTER_API_KEY;
+  delete process.env.OPENAI_API_KEY;
+  try {
+    return await fn();
+  } finally {
+    if (savedOpenRouterKey === undefined) delete process.env.OPENROUTER_API_KEY; else process.env.OPENROUTER_API_KEY = savedOpenRouterKey;
+    if (savedOpenAiKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = savedOpenAiKey;
+  }
+}
+
+// Blocks only calls to a real third-party model provider (OpenRouter/OpenAI). Requests the test
+// itself makes to its own local HTTP test server (127.0.0.1/localhost) must still go through the
+// real fetch implementation — otherwise the test could never reach the server it just started.
+function isLocalTestServerUrl(input: unknown): boolean {
+  try {
+    const url = new URL(String(input instanceof Request ? input.url : input));
+    return url.hostname === "127.0.0.1" || url.hostname === "localhost";
+  } catch {
+    return false;
+  }
+}
+
+async function withFetchBlocked<T>(fn: () => Promise<T>): Promise<T> {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
+    if (isLocalTestServerUrl(args[0])) return originalFetch(...args);
+    throw new Error(`Unexpected network call during a supposedly deterministic path: ${String(args[0])}`);
+  }) as typeof fetch;
+  try {
+    return await fn();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+test("Production wiring: the exported demoOrchestrator (used by /api/v1/demo/tomato) completes the full rain-veto/replan-to-WAIT_FOR_SAFE_WEATHER_WINDOW scenario with no OPENROUTER_API_KEY/OPENAI_API_KEY and without ever calling fetch", async () => {
+  await withNoProviderCredentials(() =>
+    withFetchBlocked(async () => {
+      const result = await demoOrchestrator.run({
+        farmId: "FARM-001",
+        plotId: "PLOT-A",
+        language: "kn",
+        mode: "DECIDE",
+        farmerText: "Tomato leaves have dark spots and the affected area is increasing."
+      });
+      // First SYNTHESIS cycle proposes the vetted biological intervention; the unmodified Safety
+      // Engine's WX-001 rule blocks it because the seeded Kolar forecast includes rain and the
+      // intervention is foliar; the unmodified orchestrator replans exactly once; the deterministic
+      // demo Synthesizer/Reviewer then converge on WAIT_FOR_SAFE_WEATHER_WINDOW, which the reviewer
+      // approves — none of this required a network call or an API key.
+      assert.deepEqual(result.caseState.workflow.trace, [
+        "INTAKE", "PERCEPTION", "CONTEXT", "RISK_ECONOMICS",
+        "SYNTHESIS", "SAFETY_CHECK", "REVIEW", "REPLAN",
+        "SYNTHESIS", "SAFETY_CHECK", "REVIEW",
+        "FINALIZE", "MEMORY_WRITE", "DONE"
+      ]);
+      assert.equal(result.decision.replanCount, 1);
+      assert.equal(result.decision.finalAction, "WAIT_FOR_SAFE_WEATHER_WINDOW");
+      assert.equal(result.decision.reviewerVerdict, "APPROVE");
+      assert.equal(result.decision.status, "FINAL");
+      assert.equal(result.decision.deterministicResult, "PASS");
+      const wx001 = result.caseState.safety.deterministicChecks.find(check => check.ruleId === "WX-001");
+      assert.ok(wx001, "the unmodified Safety Engine's WX-001 rain-vs-foliar rule must have run");
+      assert.equal(wx001?.passed, false, "WX-001 must have failed on the first cycle's foliar biological intervention proposal");
+    })
+  );
+});
+
+test("Production wiring: POST /api/v1/demo/tomato against the actual exported server returns 200 with no OPENROUTER_API_KEY/OPENAI_API_KEY set and without any network call", async () => {
+  await withNoProviderCredentials(() =>
+    withFetchBlocked(async () => {
+      await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+      try {
+        const { port } = server.address() as AddressInfo;
+        const response = await fetch(`http://127.0.0.1:${port}/api/v1/demo/tomato`, { method: "POST" });
+        assert.equal(response.status, 200);
+        const payload = await response.json() as { decision: { finalAction: string; replanCount: number } };
+        assert.equal(payload.decision.finalAction, "WAIT_FOR_SAFE_WEATHER_WINDOW");
+        assert.equal(payload.decision.replanCount, 1);
+      } finally {
+        await new Promise<void>(resolve => server.close(() => resolve()));
+      }
+    })
+  );
+});
+
+test("Production wiring: the exported orchestrator (used by /api/v1/decisions) still resolves to the real, network-calling Perception model — it rejects immediately, before Field Context or Synthesis, when no OPENROUTER_API_KEY/OPENAI_API_KEY is present, proving /api/v1/decisions was NOT converted to deterministic demo behavior", async () => {
+  await withNoProviderCredentials(async () => {
+    await assert.rejects(
+      () => orchestrator.run({
+        farmId: "FARM-001",
+        plotId: "PLOT-A",
+        language: "kn",
+        mode: "DECIDE",
+        farmerText: "Tomato leaves have dark spots and the affected area is increasing."
+      }),
+      /API_KEY is required/
+    );
+  });
+});
+
+test("Production wiring: orchestrator (/api/v1/decisions) and demoOrchestrator (/api/v1/demo/tomato) are distinct instances with different dependency sets — the demo path's determinism was not applied to the production path", () => {
+  assert.notEqual(orchestrator, demoOrchestrator);
 });
