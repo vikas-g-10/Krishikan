@@ -150,6 +150,34 @@ test("Perception: rejects other non-JSON plain text with the same controlled err
   );
 });
 
+// Regression for the follow-up production failure: a free OpenRouter model returning valid JSON
+// that is not the required perception schema at all (e.g. a safety verdict shaped as JSON instead
+// of visualFindings/symptomFindings/uncertainties). This must NOT be accepted or have missing
+// fields fabricated — it must be rejected by the existing, unmodified validatePerceptionResult.
+test("Perception: rejects well-formed JSON that omits the required schema keys, via the unmodified validatePerceptionResult, rather than fabricating or accepting it", async () => {
+  const nonSchemaJson = JSON.stringify({ userSafety: "safe", note: "No issues detected." });
+  const model = new OpenRouterChatCompletionsPerceptionModel("test-key", undefined, fakeChatCompletionsFetch(nonSchemaJson));
+  await assert.rejects(
+    () => model.observe({ instructions: "x", content: [] }),
+    /Perception model result is missing required observation fields\./
+  );
+});
+
+test("Perception: the OpenRouter system prompt explicitly reinforces the exact required JSON shape and forbids prose, and a trailing user reminder is appended without touching the farmer's original content", async () => {
+  let seenBody: any;
+  const result = { visualFindings: [], symptomFindings: [], uncertainties: [] };
+  const model = new OpenRouterChatCompletionsPerceptionModel("test-key", undefined, fakeChatCompletionsFetch(JSON.stringify(result), (_url, init) => {
+    seenBody = JSON.parse(String(init.body));
+  }));
+  await model.observe({ instructions: "base instructions", content: [{ type: "input_text", text: "Farmer report: leaf spots" }] });
+  assert.match(seenBody.messages[0].content, /base instructions/);
+  assert.match(seenBody.messages[0].content, /visualFindings/);
+  assert.match(seenBody.messages[0].content, /no prose/i);
+  assert.deepEqual(seenBody.messages[1].content[0], { type: "text", text: "Farmer report: leaf spots" });
+  assert.equal(seenBody.messages[2].role, "user");
+  assert.match(seenBody.messages[2].content[0].text, /visualFindings/);
+});
+
 test("Decision Synthesizer: strips a Markdown code fence before parsing", async () => {
   const proposal = { action: "MONITOR", interventionId: null, reason: "seeded", reasoningSummary: "seeded", evidence: [], confidence: 0.8, constraints: [], uncertainties: [], missingData: [] };
   const fenced = "```json\n" + JSON.stringify(proposal) + "\n```";

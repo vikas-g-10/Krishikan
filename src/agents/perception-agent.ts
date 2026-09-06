@@ -35,6 +35,21 @@ export class PerceptionProviderFormatError extends Error {
   }
 }
 
+// OpenRouter's free-tier models are considerably less reliable at honoring response_format:
+// json_schema than OpenAI's Responses API: beyond wrapping JSON in a Markdown fence (handled by
+// extractJsonPayload below), they sometimes reply with unrelated prose or a shortcut safety verdict
+// (e.g. "User Safety: safe") instead of the perception_observations object entirely. This
+// reinforcement is appended only to the system instructions sent to OpenRouter — it does not alter
+// the shared `perceptionInstructions` text used by the OpenAI Responses adapter — and repeats, in
+// the most explicit terms, exactly which keys must be present and that no other prose is allowed.
+const OPENROUTER_JSON_SHAPE_REINFORCEMENT = `Your entire reply MUST be ONE JSON object and NOTHING else: no prose, no safety verdicts, no notes, no markdown, no code fences, no text before or after the JSON. Do not comment on user safety or anything unrelated to the schema. The JSON object MUST contain exactly these three top-level keys, every time, with no keys added or omitted: "visualFindings" (array of {finding, confidence, uncertainty}), "symptomFindings" (array of strings), "uncertainties" (array of strings). If there is nothing to report for a key, return an empty array for it — never omit the key and never replace the object with a text explanation.`;
+
+// A short, final user-role reminder of the exact required JSON shape. This is a separate message
+// appended after the existing farmer/voice/image content — it never edits or duplicates that
+// content — used only for the OpenRouter provider to reinforce response_format compliance for
+// free-tier models that are prone to ignoring it.
+const OPENROUTER_JSON_SHAPE_USER_REMINDER = `Reminder: reply with only the required JSON object — keys "visualFindings", "symptomFindings", "uncertainties" — and no other text.`;
+
 const perceptionInstructions = `You are the KRISHI-NEXUS perception component. Extract observations only; do not diagnose with certainty. You may use farmer text, a voice transcript, and images. Return only JSON matching the supplied schema. visualFindings must describe observable symptoms, each confidence must be 0 through 1, and uncertainty must explain a limitation or ambiguity. symptomFindings must be short neutral symptom tags. Do not recommend or prescribe any treatment, chemical, product, dosage, intervention, or action. When evidence is inadequate, return low confidence and explain what is missing.`;
 
 const responseSchema = {
@@ -126,7 +141,11 @@ export class OpenRouterChatCompletionsPerceptionModel implements PerceptionModel
       headers: { "authorization": `Bearer ${this.apiKey}`, "content-type": "application/json" },
       body: JSON.stringify({
         model: this.model,
-        messages: [{ role: "system", content: request.instructions }, { role: "user", content }],
+        messages: [
+          { role: "system", content: `${request.instructions}\n\n${OPENROUTER_JSON_SHAPE_REINFORCEMENT}` },
+          { role: "user", content },
+          { role: "user", content: [{ type: "text", text: OPENROUTER_JSON_SHAPE_USER_REMINDER }] }
+        ],
         response_format: { type: "json_schema", json_schema: { name: "perception_observations", strict: true, schema: responseSchema } }
       })
     });
