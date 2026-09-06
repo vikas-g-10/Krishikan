@@ -120,7 +120,7 @@ export class OpenRouterChatCompletionsPerceptionModel implements PerceptionModel
     const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
     const outputText = payload.choices?.[0]?.message?.content;
     if (!outputText) throw new Error("Perception model returned no structured output.");
-    return validatePerceptionResult(JSON.parse(outputText));
+    return validatePerceptionResult(JSON.parse(extractJsonPayload(outputText)));
   }
 }
 
@@ -154,4 +154,13 @@ function validatePerceptionResult(value: unknown): PerceptionModelResult {
 
 function containsTreatmentLanguage(value: string): boolean {
   return /\b(recommend|prescribe|apply|spray|treat(?:ment)?|intervention|dosage|dose|\d+(?:\.\d+)?\s*(?:ml|l|lit(?:re|er)s?|g|kg|ppm)|fungicide|pesticide|herbicide|insecticide|chemical|mancozeb|copper(?:\s+sulfate)?|sulfur|neem)\b/i.test(value);
+}
+
+// Some OpenRouter-hosted free models wrap otherwise-valid structured-output JSON in a Markdown code
+// fence (e.g. "```json\n{...}\n```") despite response_format: json_schema being requested. Strip an
+// optional fence before parsing; the underlying JSON payload and all downstream validation are
+// unchanged.
+function extractJsonPayload(text: string): string {
+  const fenced = text.trim().match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  return fenced ? fenced[1] : text;
 }

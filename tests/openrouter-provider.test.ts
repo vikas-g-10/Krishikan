@@ -106,3 +106,29 @@ test("Adversarial Reviewer: posts to the Chat Completions endpoint with json_sch
   assert.equal(seenBody.response_format.json_schema.name, "decision_review");
   assert.deepEqual(parsed, verdict);
 });
+
+test("Perception: strips a Markdown ```json code fence before parsing", async () => {
+  const result = { visualFindings: [], symptomFindings: [], uncertainties: [] };
+  const fenced = "```json\n" + JSON.stringify(result) + "\n```";
+  const model = new OpenRouterChatCompletionsPerceptionModel("test-key", undefined, fakeChatCompletionsFetch(fenced));
+  const observed = await model.observe({ instructions: "x", content: [] });
+  assert.deepEqual(observed, result);
+});
+
+test("Decision Synthesizer: strips a Markdown code fence before parsing", async () => {
+  const proposal = { action: "MONITOR", interventionId: null, reason: "seeded", reasoningSummary: "seeded", evidence: [], confidence: 0.8, constraints: [], uncertainties: [], missingData: [] };
+  const fenced = "```json\n" + JSON.stringify(proposal) + "\n```";
+  const model = new OpenRouterChatCompletionsDecisionSynthesizerModel("test-key", undefined, fakeChatCompletionsFetch(fenced));
+  const request = { instructions: "synthesize", state: {} } as unknown as DecisionSynthesizerRequest;
+  const parsed = await model.synthesize(request);
+  assert.deepEqual(parsed, proposal);
+});
+
+test("Adversarial Reviewer: strips a Markdown code fence before parsing", async () => {
+  const verdict = { verdict: "APPROVE", concerns: [], requiredChanges: [] };
+  const fenced = "```json\n" + JSON.stringify(verdict) + "\n```";
+  const model = new OpenRouterChatCompletionsDecisionReviewerModel("test-key", undefined, fakeChatCompletionsFetch(fenced));
+  const request = { instructions: "review", state: {} } as unknown as DecisionReviewerRequest;
+  const parsed = await model.review(request);
+  assert.deepEqual(parsed, verdict);
+});

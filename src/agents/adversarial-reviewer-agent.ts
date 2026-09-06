@@ -107,7 +107,7 @@ export class OpenRouterChatCompletionsDecisionReviewerModel implements DecisionR
     const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
     const outputText = payload.choices?.[0]?.message?.content;
     if (!outputText) throw new Error("Adversarial Reviewer model returned no structured output.");
-    return JSON.parse(outputText);
+    return JSON.parse(extractJsonPayload(outputText));
   }
 }
 
@@ -224,4 +224,12 @@ function validateReview(value: unknown): Omit<Review, "cycleCount"> {
 // — remain fully blocked below; only the bare generic verbs were removed.
 function containsTreatmentLanguage(value: string): boolean {
   return /\b(dosage|dose|\d+(?:\.\d+)?\s*(?:ml|l|lit(?:re|er)s?|g|kg|ppm)|fungicide|pesticide|herbicide|insecticide|chemical|mancozeb|copper(?:\s+sulfate)?|sulfur|neem)\b/i.test(value);
+}
+
+// Some OpenRouter-hosted free models wrap otherwise-valid structured-output JSON in a Markdown code
+// fence despite response_format: json_schema being requested. Strip an optional fence before
+// parsing; the underlying JSON payload and all downstream validation are unchanged.
+function extractJsonPayload(text: string): string {
+  const fenced = text.trim().match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  return fenced ? fenced[1] : text;
 }
