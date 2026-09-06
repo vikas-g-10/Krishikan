@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { createRequestHandler } from "../src/api/server.ts";
 import { RealPerceptionAgent, type PerceptionModel } from "../src/agents/perception-agent.ts";
+import { mockPerception } from "../src/agents/mocks.ts";
 import { RealDecisionSynthesizerAgent, type DecisionSynthesizerModel } from "../src/agents/decision-synthesizer-agent.ts";
 import { RealAdversarialReviewerAgent, type DecisionReviewerModel } from "../src/agents/adversarial-reviewer-agent.ts";
 import { InMemoryDecisionMemory } from "../src/memory/decision-memory.ts";
@@ -46,9 +47,33 @@ function buildDeterministicOrchestrator() {
   return createDefaultOrchestrator(memory, perception, undefined, undefined, synthesizer, reviewer);
 }
 
+// Mirrors production's demo-specific wiring (see src/api/server.ts): the /api/v1/demo/tomato route
+// uses the deterministic mockPerception instead of a real, network-calling Perception model, so the
+// canned demo text (no image attached) reliably clears the confidence gate and reaches Field
+// Context. Synthesizer/Reviewer stay deterministic here purely so this test makes no network calls.
+function buildDemoOrchestrator() {
+  const memory = new InMemoryDecisionMemory();
+  const synthesizer = new RealDecisionSynthesizerAgent(deterministicSynthesizerModel, mockTools);
+  const reviewer = new RealAdversarialReviewerAgent(deterministicReviewerModel);
+  return createDefaultOrchestrator(memory, mockPerception, undefined, undefined, synthesizer, reviewer);
+}
+
 async function withTestServer(fn: (baseUrl: string) => Promise<void>): Promise<void> {
   const orchestrator = buildDeterministicOrchestrator();
   const server = createServer(createRequestHandler(orchestrator));
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address() as AddressInfo;
+    await fn(`http://127.0.0.1:${port}`);
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+}
+
+async function withDemoTestServer(fn: (baseUrl: string) => Promise<void>): Promise<void> {
+  const orchestrator = buildDeterministicOrchestrator();
+  const demoOrchestrator = buildDemoOrchestrator();
+  const server = createServer(createRequestHandler(orchestrator, undefined, demoOrchestrator));
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   try {
     const { port } = server.address() as AddressInfo;
@@ -114,5 +139,18 @@ test("POST /api/v1/decisions rejects a request missing farmerText, unchanged fro
     });
     assert.equal(response.status, 400);
     assert.deepEqual(await response.json(), { error: "farmerText is required" });
+  });
+});
+
+test("POST /api/v1/demo/tomato uses the deterministic demo Perception Agent, retrieves the seeded Kolar farm context, and proceeds past REQUEST_MORE_DATA", async () => {
+  await withDemoTestServer(async baseUrl => {
+    const response = await fetch(`${baseUrl}/api/v1/demo/tomato`, { method: "POST" });
+    assert.equal(response.status, 200);
+    const payload = await response.json() as { caseState: { farm: unknown; environment: unknown; history: unknown; workflow: { trace: string[] } } };
+    assert.notEqual(payload.caseState.farm, null);
+    assert.notEqual(payload.caseState.environment, null);
+    assert.notEqual(payload.caseState.history, null);
+    assert.ok(payload.caseState.workflow.trace.includes("CONTEXT"), "workflow must proceed to CONTEXT rather than stopping at REQUEST_MORE_DATA");
+    assert.ok(!payload.caseState.workflow.trace.includes("REQUEST_MORE_DATA"));
   });
 });

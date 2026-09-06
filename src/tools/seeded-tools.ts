@@ -34,8 +34,15 @@ export interface EconomicData {
 export interface EconomicTools { getEconomicData(input: { farmId: string; plotId: string; crop: string; cropStage: string }): Promise<EconomicData | undefined>; }
 
 export const mockTools: FarmTools & WeatherTools & AgricultureTools & EconomicTools = {
-  async getState() { return tomatoSeed.farm; }, async getHistory() { return tomatoSeed.history; },
-  async getForecast() { return tomatoSeed.weather; }, async getIntervention(id) { return interventions.find(x => x.id === id); },
+  // Only the seeded Kolar tomato farm/plot resolve to seeded data. Any other farmId/plotId
+  // returns undefined (never fabricated data) so the Field Context Agent's existing "missing
+  // data" handling — not this tool — is what surfaces an unknown farm/plot.
+  async getState(farmId, plotId) { return farmId === "FARM-001" && plotId === "PLOT-A" ? tomatoSeed.farm : undefined; },
+  async getHistory(farmId, plotId) { return farmId === "FARM-001" && plotId === "PLOT-A" ? tomatoSeed.history : undefined; },
+  // Matched by the seeded farm's own location, so the forecast is only returned for the farm the
+  // Field Context Agent actually resolved a location for.
+  async getForecast(location) { return location === tomatoSeed.farm.location ? tomatoSeed.weather : undefined; },
+  async getIntervention(id) { return interventions.find(x => x.id === id); },
   async getAvailableInterventions(crop, cropStage) { return crop === "tomato" ? interventions.filter(item => item.compatibleStages.includes(cropStage)) : []; },
   async getEconomicData() { return {
     source: "SEEDED_DEMO", currency: "INR",

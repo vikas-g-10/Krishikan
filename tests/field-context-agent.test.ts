@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ToolFieldContextAgent } from "../src/agents/field-context-agent.ts";
-import { tomatoSeed, type FarmTools, type WeatherTools } from "../src/tools/seeded-tools.ts";
+import { mockTools, tomatoSeed, type FarmTools, type WeatherTools } from "../src/tools/seeded-tools.ts";
 
 const now = new Date("2026-09-06T08:00:00.000Z");
 
@@ -67,4 +67,41 @@ test("Field Context Agent flags a timed-out tool without manufacturing weather d
   const result = await new ToolFieldContextAgent(farm, weather, 1).retrieve({ farmId: "FARM-001", plotId: "PLOT-A", now });
   assert.equal(result.environment, null);
   assert.equal(result.context.toolFlags.find(flag => flag.tool === "weather.get_forecast")?.status, "TIMED_OUT");
+});
+
+// Integration coverage against the actual seeded `mockTools` (as wired by createDefaultOrchestrator
+// and the /api/v1/demo/tomato endpoint), rather than the local test doubles above, so the demo's
+// real tool boundary — not just the Field Context Agent's own logic — is proven to retrieve the
+// seeded Kolar tomato farm context.
+
+test("seeded mockTools: FARM-001/PLOT-A retrieves the seeded Kolar tomato farm, weather, and history, and context becomes ready", async () => {
+  const result = await new ToolFieldContextAgent(mockTools, mockTools).retrieve({ farmId: "FARM-001", plotId: "PLOT-A", now });
+  assert.equal(result.farm?.location, "Kolar, Karnataka");
+  assert.equal(result.farm?.crop, "tomato");
+  assert.equal(result.farm?.variety, "Arka Vikas");
+  assert.equal(result.farm?.acreage, 1);
+  assert.equal(result.farm?.sowingDate, "2026-07-01");
+  assert.equal(result.farm?.cropStage, "FLOWERING");
+  assert.equal(result.environment?.temperature, 26);
+  assert.equal(result.environment?.humidity, 88);
+  assert.equal(result.environment?.rainfallLast24h, 18);
+  assert.equal(result.environment?.soilMoisture, 74);
+  assert.ok(Array.isArray(result.environment?.forecast) && result.environment.forecast.length > 0);
+  assert.deepEqual(result.history?.previousDecisions, ["MONITOR: 2026-09-01"]);
+  assert.deepEqual(result.history?.previousOutcomes, ["Leaf spots increased after three wet days."]);
+  assert.equal(result.context.ready, true);
+  assert.equal(result.context.conflicts.length, 0);
+  assert.deepEqual(result.context.toolFlags.map(flag => flag.status), ["RETRIEVED", "RETRIEVED", "RETRIEVED"]);
+});
+
+test("seeded mockTools: an unknown farm/plot ID returns missing data rather than the seeded farm being invented for it", async () => {
+  const result = await new ToolFieldContextAgent(mockTools, mockTools).retrieve({ farmId: "FARM-999", plotId: "PLOT-Z", now });
+  assert.equal(result.farm, null);
+  assert.equal(result.history, null);
+  // No farm location was resolved, so the weather call is skipped rather than guessed.
+  assert.equal(result.environment, null);
+  assert.equal(result.context.ready, false);
+  assert.equal(result.context.toolFlags.find(flag => flag.tool === "farm.get_state")?.status, "MISSING");
+  assert.equal(result.context.toolFlags.find(flag => flag.tool === "farm.get_history")?.status, "MISSING");
+  assert.equal(result.context.toolFlags.find(flag => flag.tool === "weather.get_forecast")?.status, "SKIPPED");
 });
