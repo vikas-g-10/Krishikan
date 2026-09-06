@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { OpenRouterChatCompletionsPerceptionModel, type PerceptionModelRequest } from "../src/agents/perception-agent.ts";
+import { OpenRouterChatCompletionsPerceptionModel, PerceptionProviderFormatError, type PerceptionModelRequest } from "../src/agents/perception-agent.ts";
 import { OpenRouterChatCompletionsDecisionSynthesizerModel, type DecisionSynthesizerRequest } from "../src/agents/decision-synthesizer-agent.ts";
 import { OpenRouterChatCompletionsDecisionReviewerModel, type DecisionReviewerRequest } from "../src/agents/adversarial-reviewer-agent.ts";
 import { tomatoSeed } from "../src/tools/seeded-tools.ts";
@@ -113,6 +113,41 @@ test("Perception: strips a Markdown ```json code fence before parsing", async ()
   const model = new OpenRouterChatCompletionsPerceptionModel("test-key", undefined, fakeChatCompletionsFetch(fenced));
   const observed = await model.observe({ instructions: "x", content: [] });
   assert.deepEqual(observed, result);
+});
+
+// Regression coverage for provider replies that are not the required structured JSON at all
+// (rather than JSON wrapped in a fence, which the test above already covers).
+
+test("Perception: still accepts plain, unfenced JSON", async () => {
+  const result = { visualFindings: [{ finding: "dark leaf spots", confidence: 0.75, uncertainty: "Lighting varies across the image." }], symptomFindings: ["leaf_spots"], uncertainties: [] };
+  const model = new OpenRouterChatCompletionsPerceptionModel("test-key", undefined, fakeChatCompletionsFetch(JSON.stringify(result)));
+  const observed = await model.observe({ instructions: "x", content: [] });
+  assert.deepEqual(observed, result);
+});
+
+test("Perception: rejects a plain-text, non-JSON reply with a controlled PerceptionProviderFormatError instead of a raw JSON.parse SyntaxError", async () => {
+  const model = new OpenRouterChatCompletionsPerceptionModel("test-key", undefined, fakeChatCompletionsFetch("User Safety: safe"));
+  await assert.rejects(
+    () => model.observe({ instructions: "x", content: [] }),
+    (error: unknown) => {
+      assert.ok(error instanceof PerceptionProviderFormatError);
+      assert.ok(!(error instanceof SyntaxError));
+      assert.match((error as Error).message, /did not return the required structured JSON output/);
+      return true;
+    }
+  );
+});
+
+test("Perception: rejects other non-JSON plain text with the same controlled error class and message pattern", async () => {
+  const model = new OpenRouterChatCompletionsPerceptionModel("test-key", undefined, fakeChatCompletionsFetch("I cannot help with that request."));
+  await assert.rejects(
+    () => model.observe({ instructions: "x", content: [] }),
+    (error: unknown) => {
+      assert.ok(error instanceof PerceptionProviderFormatError);
+      assert.match((error as Error).message, /did not return the required structured JSON output/);
+      return true;
+    }
+  );
 });
 
 test("Decision Synthesizer: strips a Markdown code fence before parsing", async () => {

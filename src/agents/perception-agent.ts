@@ -21,6 +21,20 @@ export interface PerceptionModel {
   observe(request: PerceptionModelRequest): Promise<PerceptionModelResult>;
 }
 
+/**
+ * Raised when a provider responds successfully (HTTP 200) but the response body is not the
+ * required structured JSON — e.g. a plain-text reply such as "User Safety: safe" instead of a
+ * perception_observations JSON object. Distinguished from a generic Error so callers (the
+ * orchestrator) can route this specific, controlled provider-format failure into the existing
+ * safe-fallback path instead of a raw JSON.parse SyntaxError leaking to the top level.
+ */
+export class PerceptionProviderFormatError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PerceptionProviderFormatError";
+  }
+}
+
 const perceptionInstructions = `You are the KRISHI-NEXUS perception component. Extract observations only; do not diagnose with certainty. You may use farmer text, a voice transcript, and images. Return only JSON matching the supplied schema. visualFindings must describe observable symptoms, each confidence must be 0 through 1, and uncertainty must explain a limitation or ambiguity. symptomFindings must be short neutral symptom tags. Do not recommend or prescribe any treatment, chemical, product, dosage, intervention, or action. When evidence is inadequate, return low confidence and explain what is missing.`;
 
 const responseSchema = {
@@ -120,7 +134,7 @@ export class OpenRouterChatCompletionsPerceptionModel implements PerceptionModel
     const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
     const outputText = payload.choices?.[0]?.message?.content;
     if (!outputText) throw new Error("Perception model returned no structured output.");
-    return validatePerceptionResult(JSON.parse(extractJsonPayload(outputText)));
+    return validatePerceptionResult(parsePerceptionJson(outputText));
   }
 }
 
@@ -163,4 +177,21 @@ function containsTreatmentLanguage(value: string): boolean {
 function extractJsonPayload(text: string): string {
   const fenced = text.trim().match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
   return fenced ? fenced[1] : text;
+}
+
+// Some OpenRouter-hosted free models occasionally ignore response_format: json_schema entirely and
+// reply with an unrelated plain-text message (e.g. "User Safety: safe") instead of the required
+// perception_observations JSON. A raw JSON.parse on that text throws an uninformative SyntaxError
+// that would otherwise leak as the production error. Convert that failure into a controlled,
+// explicit PerceptionProviderFormatError instead — no findings are fabricated from the text, and a
+// successful parse is still passed through to validatePerceptionResult unchanged.
+function parsePerceptionJson(outputText: string): unknown {
+  const candidate = extractJsonPayload(outputText);
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    throw new PerceptionProviderFormatError(
+      `Perception provider did not return the required structured JSON output (received: ${JSON.stringify(outputText.slice(0, 200))}).`
+    );
+  }
 }

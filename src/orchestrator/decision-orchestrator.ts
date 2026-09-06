@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { ToolFieldContextAgent, type FieldContextAgent } from "../agents/field-context-agent.ts";
 import { ToolRiskEconomicsAgent, type RiskEconomicsAgent } from "../agents/risk-economics-agent.ts";
 import type { PerceptionAgent, Reviewer, Synthesizer } from "../agents/mocks.ts";
-import { OpenAIResponsesPerceptionModel, OpenRouterChatCompletionsPerceptionModel, RealPerceptionAgent, type PerceptionModel } from "../agents/perception-agent.ts";
+import { OpenAIResponsesPerceptionModel, OpenRouterChatCompletionsPerceptionModel, PerceptionProviderFormatError, RealPerceptionAgent, type PerceptionModel } from "../agents/perception-agent.ts";
 import { OpenAIResponsesDecisionSynthesizerModel, OpenRouterChatCompletionsDecisionSynthesizerModel, RealDecisionSynthesizerAgent, type DecisionSynthesizerModel } from "../agents/decision-synthesizer-agent.ts";
 import { OpenAIResponsesDecisionReviewerModel, OpenRouterChatCompletionsDecisionReviewerModel, RealAdversarialReviewerAgent, type DecisionReviewerModel } from "../agents/adversarial-reviewer-agent.ts";
 import type { DecisionMemory } from "../memory/decision-memory.ts";
@@ -23,7 +23,18 @@ export class DecisionOrchestrator {
     const state: CaseState = { case: { caseId: randomUUID(), farmId, plotId, createdAt: now.toISOString(), language: input.language ?? "kn", mode: input.mode ?? "DECIDE" }, farm: null, observations: { farmerText: input.farmerText, voiceTranscript: input.voiceTranscript, images: input.images ?? [], visualFindings: [], symptomFindings: [], uncertainties: [] }, environment: null, history: null, context: { retrievedFacts: { farm: [], environment: [], history: [] }, derivedContext: [], toolFlags: [], conflicts: [], ready: false }, risk: { diseaseRisk: 0, weatherRisk: 0, cropStress: 0, overallRisk: "LOW", factors: [], flags: [] }, economics: { source: "UNAVAILABLE", cropValue: null, expectedLoss: null, interventionCost: null, decisionGate: "SEEK_CONFIRMATION", economicJustification: "Economic assessment has not run.", flags: [] }, safety: { deterministicChecks: [], violations: [], status: "PENDING" }, review: { verdict: "VETO", concerns: [], requiredChanges: [], cycleCount: 0 }, workflow: { current: "INTAKE", trace: ["INTAKE"], negativeConstraints: [] } };
 
     this.transition(state, "PERCEPTION");
-    Object.assign(state.observations, await this.deps.perception.observe(state));
+    try {
+      Object.assign(state.observations, await this.deps.perception.observe(state));
+    } catch (error) {
+      // A provider that returns HTTP 200 with non-JSON/unstructured text (e.g. "User Safety: safe")
+      // is a controlled, expected failure mode of the model boundary, not a system fault — route it
+      // into the same safe-fallback behavior as the other "could not derive a decision" branches
+      // below instead of letting it bubble up as an unhandled error (HTTP 500). Any other perception
+      // error (e.g. missing API key, network failure, transport error) is unrelated to this fix and
+      // continues to propagate unchanged.
+      if (error instanceof PerceptionProviderFormatError) return this.completePerceptionProviderFailure(state, now);
+      throw error;
+    }
     const confidence = Math.max(...state.observations.visualFindings.map(f => f.confidence), 0);
     if (confidence < 0.7) return this.completeRequestMoreData(state, now);
 
@@ -58,6 +69,7 @@ export class DecisionOrchestrator {
   private completeContextUnavailable(state: CaseState, now: Date): DecisionResponse { this.transition(state, "SAFE_FALLBACK"); state.proposedDecision = { action: "SEEK_EXPERT_CONFIRMATION", reason: "Field context is incomplete, conflicting, or unavailable; no decision was derived from missing facts.", evidence: state.context.toolFlags.filter(flag => flag.status !== "RETRIEVED").map(flag => `${flag.tool}: ${flag.status}`), confidence: 0.4, constraints: [] }; const decision = this.record(state, now, "SAFE_FALLBACK"); this.transition(state, "DONE"); return { caseState: state, decision }; }
   private completeEconomicsUnavailable(state: CaseState, now: Date): DecisionResponse { this.transition(state, "SAFE_FALLBACK"); state.proposedDecision = { action: "SEEK_EXPERT_CONFIRMATION", reason: "Economic inputs are incomplete, conflicting, invalid, or unavailable; no monetary value was inferred.", evidence: state.economics.flags.map(flag => `${flag.field}: ${flag.status}`), confidence: 0.4, constraints: [] }; const decision = this.record(state, now, "SAFE_FALLBACK"); this.transition(state, "DONE"); return { caseState: state, decision }; }
   private completeRequestMoreData(state: CaseState, now: Date): DecisionResponse { this.transition(state, "REQUEST_MORE_DATA"); state.proposedDecision = { action: "SEEK_EXPERT_CONFIRMATION", reason: "Please provide a clearer image or fuller symptom description before a disease-specific recommendation.", evidence: [], confidence: 0.4, constraints: [] }; const decision = this.record(state, now, "SAFE_FALLBACK"); this.transition(state, "DONE"); return { caseState: state, decision }; }
+  private completePerceptionProviderFailure(state: CaseState, now: Date): DecisionResponse { this.transition(state, "SAFE_FALLBACK"); state.proposedDecision = { action: "SEEK_EXPERT_CONFIRMATION", reason: "The perception model provider did not return the required structured observation output; no findings could be derived.", evidence: [], confidence: 0.4, constraints: [] }; const decision = this.record(state, now, "SAFE_FALLBACK"); this.transition(state, "DONE"); return { caseState: state, decision }; }
 }
 
 // Phase 14.2: provider selection. MODEL_PROVIDER selects which real model backs each agent's model

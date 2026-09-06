@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { RealPerceptionAgent, type PerceptionModel, type PerceptionModelRequest } from "../src/agents/perception-agent.ts";
+import { PerceptionProviderFormatError, RealPerceptionAgent, type PerceptionModel, type PerceptionModelRequest } from "../src/agents/perception-agent.ts";
 import { RealDecisionSynthesizerAgent, type DecisionSynthesizerModel } from "../src/agents/decision-synthesizer-agent.ts";
 import { RealAdversarialReviewerAgent, type DecisionReviewerModel } from "../src/agents/adversarial-reviewer-agent.ts";
 import { InMemoryDecisionMemory } from "../src/memory/decision-memory.ts";
@@ -102,4 +102,24 @@ test("real Perception Agent rejects treatment or dosage language from the model"
     return { visualFindings: [{ finding: "Spray 2 ml of product", confidence: 0.9, uncertainty: "None" }], symptomFindings: ["leaf_spots"], uncertainties: [] };
   } };
   await assert.rejects(() => new RealPerceptionAgent(unsafeModel).observe({ observations: { farmerText: "spots", images: [], visualFindings: [], symptomFindings: [], uncertainties: [] } } as never), /prohibited treatment or dosage language/);
+});
+
+test("a controlled PerceptionProviderFormatError (e.g. a non-JSON provider reply) is routed to the SAFE_FALLBACK path instead of becoming an unhandled error", async () => {
+  const unstructuredReplyModel: PerceptionModel = {
+    async observe() { throw new PerceptionProviderFormatError("Perception provider did not return the required structured JSON output (received: \"User Safety: safe\")."); }
+  };
+  const response = await createDefaultOrchestrator(new InMemoryDecisionMemory(), new RealPerceptionAgent(unstructuredReplyModel)).run({ farmerText: "Something looks unusual." });
+  assert.equal(response.caseState.workflow.trace.at(-2), "SAFE_FALLBACK");
+  assert.equal(response.decision.status, "SAFE_FALLBACK");
+  assert.equal(response.decision.finalAction, "SEEK_EXPERT_CONFIRMATION");
+});
+
+test("a generic (non-format) perception error still propagates unchanged, e.g. to an HTTP 500", async () => {
+  const brokenModel: PerceptionModel = {
+    async observe() { throw new Error("network error contacting provider"); }
+  };
+  await assert.rejects(
+    () => createDefaultOrchestrator(new InMemoryDecisionMemory(), new RealPerceptionAgent(brokenModel)).run({ farmerText: "Something looks unusual." }),
+    /network error contacting provider/
+  );
 });
