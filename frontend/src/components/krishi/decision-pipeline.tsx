@@ -119,7 +119,17 @@ function PipelineStep({
   );
 }
 
-export function DecisionPipeline() {
+export function DecisionPipeline({
+  fetcher = runTomatoDemo,
+}: {
+  /**
+   * Defaults to the existing demo scenario (runTomatoDemo), so the
+   * /ai-decisions page behaves exactly as before. Pass a different fetcher
+   * (e.g. one bound to a real farmer submission via submitDecision) to reuse
+   * this exact pipeline UI for a live case instead of the canned demo.
+   */
+  fetcher?: () => Promise<KrishiDemoResponse>;
+} = {}) {
   const [data, setData] = useState<KrishiDemoResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -129,7 +139,7 @@ export function DecisionPipeline() {
       setLoading(true);
       setError(null);
 
-      const result = await runTomatoDemo();
+      const result = await fetcher();
 
       setData(result);
     } catch (err) {

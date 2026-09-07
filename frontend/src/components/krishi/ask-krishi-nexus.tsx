@@ -4,6 +4,8 @@ import { Camera, Mic, SendHorizonal, Sparkles, SquareX, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { DecisionPipeline } from "@/components/krishi/decision-pipeline";
+import { submitDecision, type SubmitDecisionInput } from "@/lib/krishi-api";
 
 // Minimal ambient typings for the Web Speech API (not in default TS DOM lib).
 interface SpeechRecognitionResultLike {
@@ -35,6 +37,16 @@ function getSpeechRecognitionCtor(): SpeechRecognitionCtor | null {
   return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
 }
 
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () =>
+      reject(reader.error ?? new Error("Failed to read the selected photo."));
+    reader.readAsDataURL(file);
+  });
+}
+
 type Lang = "en" | "kn";
 
 const copy = {
@@ -51,10 +63,11 @@ const copy = {
       "Why is Plot B flagged for stem borer?",
       "When should I plan harvest?",
     ],
-    note: "Interface preview — no advice is generated yet.",
+    note: "Your text and photo are sent to the live KRISHI-NEXUS decision pipeline.",
     listening: "Listening…",
     removePhoto: "Remove photo",
     voiceUnsupported: "Voice input isn't supported in this browser.",
+    preparing: "Preparing…",
   },
   kn: {
     eyebrow: "ನಿರ್ಧಾರ ಸಹಾಯಕ",
@@ -69,10 +82,11 @@ const copy = {
       "ಪ್ಲಾಟ್ B ಗೆ ಕಾಂಡಕೊರಕ ಎಚ್ಚರಿಕೆ ಏಕೆ?",
       "ಕಟಾವು ಯಾವಾಗ ಯೋಜಿಸಬೇಕು?",
     ],
-    note: "ಇದು ವಿನ್ಯಾಸ ಮುನ್ನೋಟ — ಇನ್ನೂ ಸಲಹೆ ನೀಡುವುದಿಲ್ಲ.",
+    note: "ನಿಮ್ಮ ಪಠ್ಯ ಮತ್ತು ಫೋಟೋವನ್ನು ಲೈವ್ ಕೃಷಿ-ನೆಕ್ಸಸ್ ನಿರ್ಧಾರ ಪೈಪ್‌ಲೈನ್‌ಗೆ ಕಳುಹಿಸಲಾಗುತ್ತದೆ.",
     listening: "ಆಲಿಸಲಾಗುತ್ತಿದೆ…",
     removePhoto: "ಫೋಟೋ ತೆಗೆದುಹಾಕಿ",
     voiceUnsupported: "ಈ ಬ್ರೌಸರ್‌ನಲ್ಲಿ ಧ್ವನಿ ಇನ್‌ಪುಟ್ ಬೆಂಬಲಿತವಾಗಿಲ್ಲ.",
+    preparing: "ಸಿದ್ಧಪಡಿಸಲಾಗುತ್ತಿದೆ…",
   },
 } satisfies Record<Lang, unknown>;
 
@@ -87,11 +101,15 @@ export function AskKrishiNexus() {
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [isListening, setIsListening] = useState(false);
   const [voiceSupported, setVoiceSupported] = useState(true);
+  const [isPreparingSubmission, setIsPreparingSubmission] = useState(false);
+  const [submission, setSubmission] = useState<SubmitDecisionInput | null>(null);
+  const [submissionId, setSubmissionId] = useState(0);
   const t = copy[lang];
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const objectUrlRef = useRef<string | null>(null);
+  const photoFileRef = useRef<File | null>(null);
 
   useEffect(() => {
     setVoiceSupported(getSpeechRecognitionCtor() !== null);
@@ -121,6 +139,7 @@ export function AskKrishiNexus() {
     }
     const url = URL.createObjectURL(file);
     objectUrlRef.current = url;
+    photoFileRef.current = file;
     setPhotoPreview(url);
 
     // Allow re-selecting the same file later (e.g. after removing it).
@@ -132,6 +151,7 @@ export function AskKrishiNexus() {
       URL.revokeObjectURL(objectUrlRef.current);
       objectUrlRef.current = null;
     }
+    photoFileRef.current = null;
     setPhotoPreview(null);
   };
 
@@ -181,6 +201,23 @@ export function AskKrishiNexus() {
       stopListening();
     } else {
       startListening();
+    }
+  };
+
+  const handleSubmit = async () => {
+    const farmerText = query.trim();
+    if (!farmerText || isPreparingSubmission) return;
+
+    setIsPreparingSubmission(true);
+    try {
+      const images: string[] = [];
+      if (photoFileRef.current) {
+        images.push(await fileToDataUrl(photoFileRef.current));
+      }
+      setSubmission({ farmerText, images, language: lang });
+      setSubmissionId((id) => id + 1);
+    } finally {
+      setIsPreparingSubmission(false);
     }
   };
 
@@ -270,8 +307,14 @@ export function AskKrishiNexus() {
                 <span className="hidden sm:inline">{isListening ? t.listening : t.voice}</span>
               </Button>
             </div>
-            <Button type="button" size="sm" className="rounded-full">
-              {t.submit}
+            <Button
+              type="button"
+              size="sm"
+              className="rounded-full"
+              onClick={() => void handleSubmit()}
+              disabled={!query.trim() || isPreparingSubmission}
+            >
+              {isPreparingSubmission ? t.preparing : t.submit}
               <SendHorizonal className="size-4" />
             </Button>
           </div>
@@ -316,6 +359,15 @@ export function AskKrishiNexus() {
         </div>
         <p className="mt-3 text-[11px] text-muted-foreground">{t.note}</p>
       </div>
+
+      {submission && (
+        <div className="mt-1">
+          <DecisionPipeline
+            key={submissionId}
+            fetcher={() => submitDecision(submission)}
+          />
+        </div>
+      )}
     </section>
   );
 }

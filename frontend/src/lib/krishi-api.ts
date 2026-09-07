@@ -210,3 +210,34 @@ export async function runTomatoDemo(): Promise<KrishiDemoResponse> {
 
   return response.json() as Promise<KrishiDemoResponse>;
 }
+
+export interface SubmitDecisionInput {
+  farmerText: string;
+  images?: string[];
+  language?: "en" | "kn";
+}
+
+/**
+ * Submits a real farmer query (optionally with one or more images as base64
+ * data URLs) to the live decision pipeline at /api/v1/decisions. Returns the
+ * same case-state/decision shape as runTomatoDemo above.
+ */
+export async function submitDecision(
+  input: SubmitDecisionInput,
+): Promise<KrishiDemoResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/v1/decisions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(input),
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `KRISHI-NEXUS backend returned HTTP ${response.status}`,
+    );
+  }
+
+  return response.json() as Promise<KrishiDemoResponse>;
+}
