@@ -226,6 +226,17 @@ export function DecisionPipeline() {
 
   const finalProposal = caseState.proposedDecision;
 
+  const initialAction =
+    firstCycle?.proposal?.action.replaceAll("_", " ") ??
+    "No initial proposal";
+
+  const revisedAction =
+    secondCycle?.proposal?.action.replaceAll("_", " ") ??
+    finalAction;
+
+  const reviewerVetoed = firstCycle?.review.verdict === "VETO";
+  const safetyBlocked = firstCycle?.safety.status === "BLOCKED";
+
   return (
     <div className="space-y-6">
       {/* Scenario context */}
@@ -447,12 +458,12 @@ export function DecisionPipeline() {
 
                   <div className="mt-2 flex flex-wrap gap-2">
                     {firstCycle.proposal.evidence.map((item) => (
-                     <span
+                      <span
                         key={item}
                         className="inline-flex rounded-full bg-muted px-3 py-1.5 text-xs font-medium text-muted-foreground ring-1 ring-border/50"
                       >
-                      {item}
-                    </span>
+                        {item}
+                      </span>
                     ))}
                   </div>
                 </div>
@@ -581,46 +592,126 @@ export function DecisionPipeline() {
           icon={<RefreshCw className="size-5" />}
           status="neutral"
         >
-          <div className="rounded-2xl bg-muted/60 p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              Replan count
-            </p>
+          <div className="rounded-2xl bg-primary/5 p-4 ring-1 ring-primary/15">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  The system changed its plan
+                </p>
 
-            <p className="mt-1 text-lg font-bold">
-              {decision.replanCount}
-            </p>
+                <p className="mt-1 text-sm font-semibold text-foreground">
+                  Cycle 1 was rejected, so KRISHI-NEXUS replanned
+                  instead of forcing the original action.
+                </p>
+              </div>
+
+              <span className="inline-flex rounded-full bg-primary/10 px-3 py-1.5 text-xs font-bold text-primary ring-1 ring-primary/20">
+                REPLAN {decision.replanCount}
+              </span>
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-3 md:grid-cols-[1fr_auto_1fr] md:items-stretch">
+            {/* Before */}
+            <div className="rounded-2xl bg-status-alert/10 p-4 ring-1 ring-status-alert/20">
+              <p className="text-xs font-semibold uppercase tracking-wide text-status-alert">
+                Cycle 1 · Before
+              </p>
+
+              <p className="mt-2 text-base font-bold text-foreground">
+                {initialAction}
+              </p>
+
+              {firstCycle?.proposal?.interventionId && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Vetted intervention:{" "}
+                  <span className="font-semibold text-foreground">
+                    {firstCycle.proposal.interventionId}
+                  </span>
+                </p>
+              )}
+
+              <div className="mt-3 space-y-2">
+                {safetyBlocked && (
+                  <p className="text-xs font-semibold text-status-alert">
+                    ✕ Blocked by deterministic safety rule
+                  </p>
+                )}
+
+                {reviewerVetoed && (
+                  <p className="text-xs font-semibold text-status-alert">
+                    ✕ Rejected by adversarial reviewer
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* Transition */}
+            <div className="flex items-center justify-center">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary ring-1 ring-primary/20">
+                <RefreshCw className="size-5" />
+              </div>
+            </div>
+
+            {/* After */}
+            <div className="rounded-2xl bg-status-good/10 p-4 ring-1 ring-status-good/20">
+              <p className="text-xs font-semibold uppercase tracking-wide text-status-good">
+                Cycle 2 · After
+              </p>
+
+              <p className="mt-2 text-base font-bold text-foreground">
+                {revisedAction}
+              </p>
+
+              {secondCycle?.proposal && (
+                <>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    {secondCycle.proposal.reason}
+                  </p>
+
+                  <p className="mt-3 text-xs font-semibold text-status-good">
+                    ✓ Revised proposal passed the next safety review
+                  </p>
+                </>
+              )}
+            </div>
           </div>
 
           {caseState.workflow.negativeConstraints.length > 0 && (
-            <div className="mt-3 rounded-2xl bg-status-watch/10 p-4 ring-1 ring-status-watch/20">
+            <div className="mt-4 rounded-2xl bg-status-watch/10 p-4 ring-1 ring-status-watch/20">
               <p className="text-xs font-semibold uppercase tracking-wide text-status-watch">
-                Negative constraint carried forward
+                Constraint carried forward
               </p>
 
               <p className="mt-1 text-sm font-semibold text-foreground">
                 {caseState.workflow.negativeConstraints[0]}
               </p>
+
+              <p className="mt-2 text-xs text-muted-foreground">
+                The reviewer&apos;s veto became a constraint for
+                the next planning cycle.
+              </p>
             </div>
           )}
 
           {secondCycle?.proposal && (
-            <div className="mt-3 rounded-2xl bg-primary/5 p-4 ring-1 ring-primary/15">
-              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                Revised proposal
-              </p>
+            <div className="mt-4 grid gap-3 sm:grid-cols-3">
+              <Metric
+                label="Revised action"
+                value={revisedAction}
+              />
 
-              <p className="mt-1 text-base font-bold text-foreground">
-                {secondCycle.proposal.action.replaceAll("_", " ")}
-              </p>
+              <Metric
+                label="Cycle 2 confidence"
+                value={`${Math.round(
+                  secondCycle.proposal.confidence * 100,
+                )}%`}
+              />
 
-              <p className="mt-1 text-sm text-muted-foreground">
-                {secondCycle.proposal.reason}
-              </p>
-
-              <p className="mt-2 text-xs text-muted-foreground">
-                Confidence:{" "}
-                {Math.round(secondCycle.proposal.confidence * 100)}%
-              </p>
+              <Metric
+                label="Replan count"
+                value={decision.replanCount}
+              />
             </div>
           )}
         </PipelineStep>
@@ -662,6 +753,87 @@ export function DecisionPipeline() {
             </div>
           </div>
 
+          {/* Why this decision? */}
+          <div className="mt-4 rounded-2xl border border-primary/20 bg-primary/5 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-primary">
+              Why this decision?
+            </p>
+
+            <div className="mt-3 space-y-3">
+              <div className="flex gap-3">
+                <span className="mt-0.5 text-sm font-bold text-primary">
+                  1
+                </span>
+
+                <div>
+                  <p className="text-sm font-semibold text-foreground">
+                    Field evidence indicated meaningful risk.
+                  </p>
+
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    Leaf spots, increasing affected area, high
+                    humidity, and the disease-risk assessment
+                    justified evaluating an intervention.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex gap-3">
+                <span className="mt-0.5 text-sm font-bold text-primary">
+                  2
+                </span>
+
+                <div>
+                  <p className="text-sm font-semibold text-foreground">
+                    The first intervention was not allowed to pass.
+                  </p>
+
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    The deterministic safety engine detected
+                    a rain conflict with the proposed foliar
+                    intervention.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex gap-3">
+                <span className="mt-0.5 text-sm font-bold text-primary">
+                  3
+                </span>
+
+                <div>
+                  <p className="text-sm font-semibold text-foreground">
+                    The adversarial reviewer forced a safer replan.
+                  </p>
+
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    The veto became a negative constraint and
+                    prevented the system from repeating the
+                    same unsafe action.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex gap-3">
+                <span className="mt-0.5 text-sm font-bold text-primary">
+                  4
+                </span>
+
+                <div>
+                  <p className="text-sm font-semibold text-foreground">
+                    The revised plan passed all final checks.
+                  </p>
+
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    KRISHI-NEXUS selected a safe weather window
+                    instead of forcing an intervention during
+                    unfavorable conditions.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <div className="mt-3 rounded-2xl bg-muted/60 p-4">
             <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               Decision reasoning
@@ -672,7 +844,7 @@ export function DecisionPipeline() {
             </p>
           </div>
 
-          <p className="mt-3 text-xs text-status-good">
+          <p className="mt-3 text-xs font-semibold text-status-good">
             Final action approved after deterministic safety
             validation and adversarial review.
           </p>
