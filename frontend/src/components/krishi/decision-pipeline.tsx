@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import type { ReactNode } from "react";
 
 import {
   ScanLine,
@@ -62,10 +63,10 @@ function StepBadge({ status }: { status: StepStatus }) {
 interface PipelineStepProps {
   step: number;
   title: string;
-  icon: React.ReactNode;
+  icon: ReactNode;
   status?: StepStatus;
   isLast?: boolean;
-  children: React.ReactNode;
+  children: ReactNode;
 }
 
 function PipelineStep({
@@ -221,11 +222,9 @@ export function DecisionPipeline() {
           .join(" · ")
       : "No forecast data available";
 
-  const finalAction =
-    decision.finalAction.replaceAll("_", " ");
+  const finalAction = decision.finalAction.replaceAll("_", " ");
 
-  const finalProposal =
-    caseState.proposedDecision;
+  const finalProposal = caseState.proposedDecision;
 
   return (
     <div className="space-y-6">
@@ -361,11 +360,7 @@ export function DecisionPipeline() {
           step={3}
           title="Risk & economics"
           icon={<TrendingUp className="size-5" />}
-          status={
-            caseState.risk.overallRisk === "HIGH"
-              ? "blocked"
-              : "neutral"
-          }
+          status="neutral"
         >
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <Metric
@@ -452,12 +447,12 @@ export function DecisionPipeline() {
 
                   <div className="mt-2 flex flex-wrap gap-2">
                     {firstCycle.proposal.evidence.map((item) => (
-                      <span
+                     <span
                         key={item}
-                        className="rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground"
+                        className="inline-flex rounded-full bg-muted px-3 py-1.5 text-xs font-medium text-muted-foreground ring-1 ring-border/50"
                       >
-                        {item}
-                      </span>
+                      {item}
+                    </span>
                     ))}
                   </div>
                 </div>
@@ -486,21 +481,13 @@ export function DecisionPipeline() {
               : "safe"
           }
         >
-          <div className="flex flex-wrap items-center gap-2">
-            <StepBadge
-              status={
-                firstCycle?.safety.status === "BLOCKED"
-                  ? "blocked"
-                  : "safe"
-              }
-            />
+          <p className="text-sm font-semibold">
+            {firstCycle?.safety.status === "BLOCKED"
+              ? "The deterministic safety engine blocked the initial proposal."
+              : "All deterministic safety checks passed."}
+          </p>
 
-            <span className="text-sm font-semibold">
-              {firstCycle?.safety.status ?? "UNKNOWN"}
-            </span>
-          </div>
-
-          {weatherBlock ? (
+          {weatherBlock && (
             <div className="mt-3 rounded-2xl bg-status-alert/10 p-4 ring-1 ring-status-alert/20">
               <p className="text-sm font-semibold text-status-alert">
                 Blocking rule: {weatherBlock.ruleId}
@@ -510,10 +497,6 @@ export function DecisionPipeline() {
                 {weatherBlock.reason}
               </p>
             </div>
-          ) : (
-            <p className="mt-3 text-sm text-foreground">
-              All deterministic safety checks passed.
-            </p>
           )}
 
           {failedChecks.length > 0 && (
@@ -553,19 +536,11 @@ export function DecisionPipeline() {
               : "safe"
           }
         >
-          <div className="flex flex-wrap items-center gap-2">
-            <StepBadge
-              status={
-                firstCycle?.review.verdict === "VETO"
-                  ? "veto"
-                  : "safe"
-              }
-            />
-
-            <span className="text-sm font-semibold">
-              {firstCycle?.review.verdict ?? "UNKNOWN"}
-            </span>
-          </div>
+          <p className="text-sm font-semibold">
+            {firstCycle?.review.verdict === "VETO"
+              ? "The adversarial reviewer rejected the initial proposal."
+              : "The adversarial reviewer approved the proposal."}
+          </p>
 
           {firstCycle?.review.concerns.length > 0 && (
             <div className="mt-3">
@@ -713,9 +688,7 @@ export function DecisionPipeline() {
           </span>
         </span>
 
-        <span>
-          Live data · KRISHI-NEXUS backend
-        </span>
+        <span>Live data · KRISHI-NEXUS backend</span>
       </div>
     </div>
   );
@@ -727,7 +700,7 @@ function Metric({
   valueClass,
 }: {
   label: string;
-  value: React.ReactNode;
+  value: ReactNode;
   valueClass?: string;
 }) {
   return (
