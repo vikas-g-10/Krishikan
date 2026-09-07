@@ -139,6 +139,11 @@ export class GroqChatCompletionsDecisionReviewerModel implements DecisionReviewe
       body: JSON.stringify({
         model: this.model,
         messages: [{ role: "system", content: request.instructions }, { role: "user", content: JSON.stringify(request.state) }],
+        // GPT-OSS models always reason and cannot fully disable it, but reasoning_effort: "low"
+        // keeps that reasoning pass short, and max_completion_tokens caps the total response so a
+        // low per-minute output-token limit on this account isn't exceeded.
+        reasoning_effort: "low",
+        max_completion_tokens: 1000,
         response_format: { type: "json_schema", json_schema: { name: "decision_review", strict: true, schema: responseSchema } }
       })
     });

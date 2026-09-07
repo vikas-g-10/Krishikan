@@ -160,11 +160,12 @@ export class OpenRouterChatCompletionsPerceptionModel implements PerceptionModel
 /**
  * Groq's OpenAI-compatible Chat Completions provider. Same PerceptionModel boundary as the
  * OpenRouter and OpenAI adapters above — only the transport, endpoint, and provider quirks
- * differ. Defaults to a Groq-hosted vision-capable Llama 4 model, since this agent needs to
- * read images. Groq does not currently guarantee strict `response_format: json_schema` on any
- * vision-capable model, so this adapter asks for `json_object` mode instead and leans on the
- * same explicit JSON-shape reinforcement text and markdown-fence-stripping fallback used by the
- * OpenRouter adapter to recover a clean JSON payload.
+ * differ. Defaults to `qwen/qwen3.6-27b`, Groq's current vision-capable model (Groq retired the
+ * previous vision model, `meta-llama/llama-4-scout-17b-16e-instruct`, in mid-2026 — see
+ * https://console.groq.com/docs/deprecations). Groq does not currently guarantee strict
+ * `response_format: json_schema` alongside image input, so this adapter asks for `json_object`
+ * mode instead and leans on the same explicit JSON-shape reinforcement text and markdown-fence-
+ * stripping fallback used by the OpenRouter adapter to recover a clean JSON payload.
  */
 export class GroqChatCompletionsPerceptionModel implements PerceptionModel {
   private readonly apiKey: string | undefined;
@@ -172,7 +173,7 @@ export class GroqChatCompletionsPerceptionModel implements PerceptionModel {
   private readonly fetchImpl: typeof fetch;
   constructor(
     apiKey = process.env.GROQ_API_KEY,
-    model = process.env.GROQ_PERCEPTION_MODEL ?? process.env.GROQ_MODEL ?? "meta-llama/llama-4-scout-17b-16e-instruct",
+    model = process.env.GROQ_PERCEPTION_MODEL ?? process.env.GROQ_MODEL ?? "qwen/qwen3.6-27b",
     fetchImpl: typeof fetch = fetch
   ) {
     this.apiKey = apiKey;
@@ -195,6 +196,12 @@ export class GroqChatCompletionsPerceptionModel implements PerceptionModel {
           { role: "user", content },
           { role: "user", content: [{ type: "text", text: OPENROUTER_JSON_SHAPE_USER_REMINDER }] }
         ],
+        // Qwen 3.6 is a "thinking" model and reasons at length by default, which blew past this
+        // account's output-tokens-per-minute limit. reasoning_effort: "none" disables that hidden
+        // reasoning pass for the qwen3 family, and max_completion_tokens caps the visible JSON
+        // answer itself — this task only ever needs a small structured object.
+        reasoning_effort: "none",
+        max_completion_tokens: 800,
         response_format: { type: "json_object" }
       })
     });
