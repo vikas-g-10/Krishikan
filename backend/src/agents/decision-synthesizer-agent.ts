@@ -208,8 +208,16 @@ function validateProposal(value: unknown, state: CaseState, vetted: Intervention
   return { action, interventionId: proposal.interventionId ?? undefined, reason: proposal.reason, reasoningSummary: proposal.reasoningSummary, evidence: proposal.evidence as string[], confidence: proposal.confidence, constraints, uncertainties: proposal.uncertainties as string[], missingData: proposal.missingData as string[] };
 }
 
+// Blocks concrete, unambiguous treatment/product/dosage identifiers only (mirrors the same,
+// already-narrowed pattern used by RealAdversarialReviewerAgent below). Generic verbs like
+// "recommend", "prescribe", "apply", "spray", and "treatment" are deliberately NOT blocked here:
+// they are ordinary English words that show up in perfectly safe reasoning (e.g. "is it a good
+// day to apply urea", or explaining why WAIT_FOR_SAFE_WEATHER_WINDOW was recommended over an
+// intervention) and previously caused this exact, legitimate case to be rejected with a 500.
+// The real risk signal is a specific chemical/product name, a dosage, or a concentration unit,
+// all of which remain blocked below.
 function containsTreatmentLanguage(value: string): boolean {
-  return /\b(recommend|prescribe|apply|spray|treat(?:ment)?|dosage|dose|\d+(?:\.\d+)?\s*(?:ml|l|lit(?:re|er)s?|g|kg|ppm)|fungicide|pesticide|herbicide|insecticide|chemical|mancozeb|copper(?:\s+sulfate)?|sulfur|neem)\b/i.test(value);
+  return /\b(dosage|dose|\d+(?:\.\d+)?\s*(?:ml|l|lit(?:re|er)s?|g|kg|ppm)|fungicide|pesticide|herbicide|insecticide|chemical|mancozeb|copper(?:\s+sulfate)?|sulfur|neem)\b/i.test(value);
 }
 
 // Shape of the Chat Completions `message` object as actually returned by OpenRouter, including the

@@ -185,8 +185,15 @@ function validatePerceptionResult(value: unknown): PerceptionModelResult {
   return { visualFindings, symptomFindings: result.symptomFindings, uncertainties: result.uncertainties };
 }
 
+// Blocks concrete, unambiguous treatment/product/dosage identifiers only (mirrors the same,
+// already-narrowed pattern used by RealAdversarialReviewerAgent). Generic verbs like "recommend",
+// "apply", "spray", "treatment", and "intervention" are deliberately NOT blocked here — they are
+// ordinary words that can legitimately appear in a factual visual/symptom observation (e.g. a
+// farmer's own field notes mentioning fertilizer application) without the model itself proposing
+// any treatment. The real risk signal is a specific chemical/product name, a dosage, or a
+// concentration unit, all of which remain blocked below.
 function containsTreatmentLanguage(value: string): boolean {
-  return /\b(recommend|prescribe|apply|spray|treat(?:ment)?|intervention|dosage|dose|\d+(?:\.\d+)?\s*(?:ml|l|lit(?:re|er)s?|g|kg|ppm)|fungicide|pesticide|herbicide|insecticide|chemical|mancozeb|copper(?:\s+sulfate)?|sulfur|neem)\b/i.test(value);
+  return /\b(dosage|dose|\d+(?:\.\d+)?\s*(?:ml|l|lit(?:re|er)s?|g|kg|ppm)|fungicide|pesticide|herbicide|insecticide|chemical|mancozeb|copper(?:\s+sulfate)?|sulfur|neem)\b/i.test(value);
 }
 
 // Some OpenRouter-hosted free models wrap otherwise-valid structured-output JSON in a Markdown code
