@@ -157,6 +157,55 @@ export class OpenRouterChatCompletionsPerceptionModel implements PerceptionModel
   }
 }
 
+/**
+ * Groq's OpenAI-compatible Chat Completions provider. Same PerceptionModel boundary as the
+ * OpenRouter and OpenAI adapters above — only the transport, endpoint, and provider quirks
+ * differ. Defaults to a Groq-hosted vision-capable Llama 4 model, since this agent needs to
+ * read images. Groq does not currently guarantee strict `response_format: json_schema` on any
+ * vision-capable model, so this adapter asks for `json_object` mode instead and leans on the
+ * same explicit JSON-shape reinforcement text and markdown-fence-stripping fallback used by the
+ * OpenRouter adapter to recover a clean JSON payload.
+ */
+export class GroqChatCompletionsPerceptionModel implements PerceptionModel {
+  private readonly apiKey: string | undefined;
+  private readonly model: string;
+  private readonly fetchImpl: typeof fetch;
+  constructor(
+    apiKey = process.env.GROQ_API_KEY,
+    model = process.env.GROQ_PERCEPTION_MODEL ?? process.env.GROQ_MODEL ?? "meta-llama/llama-4-scout-17b-16e-instruct",
+    fetchImpl: typeof fetch = fetch
+  ) {
+    this.apiKey = apiKey;
+    this.model = model;
+    this.fetchImpl = fetchImpl;
+  }
+
+  async observe(request: PerceptionModelRequest): Promise<PerceptionModelResult> {
+    if (!this.apiKey) throw new Error("GROQ_API_KEY is required to run the real Perception Agent via Groq.");
+    const content = request.content.map(part => part.type === "input_text"
+      ? { type: "text" as const, text: part.text }
+      : { type: "image_url" as const, image_url: { url: part.image_url, detail: part.detail } });
+    const response = await this.fetchImpl("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: { "authorization": `Bearer ${this.apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        model: this.model,
+        messages: [
+          { role: "system", content: `${request.instructions}\n\n${OPENROUTER_JSON_SHAPE_REINFORCEMENT}` },
+          { role: "user", content },
+          { role: "user", content: [{ type: "text", text: OPENROUTER_JSON_SHAPE_USER_REMINDER }] }
+        ],
+        response_format: { type: "json_object" }
+      })
+    });
+    if (!response.ok) throw new Error(`Perception model request failed (${response.status}): ${await response.text()}`);
+    const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+    const outputText = payload.choices?.[0]?.message?.content;
+    if (!outputText) throw new Error("Perception model returned no structured output.");
+    return validatePerceptionResult(parsePerceptionJson(outputText));
+  }
+}
+
 export class RealPerceptionAgent implements PerceptionAgent {
   private readonly model: PerceptionModel;
   constructor(model: PerceptionModel) { this.model = model; }

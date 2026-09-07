@@ -1,0 +1,245 @@
+diff --git a/backend/.env.example b/backend/.env.example
+index 3deb5a3..1fb7a04 100644
+--- a/backend/.env.example
++++ b/backend/.env.example
+@@ -1,2 +1,16 @@
+ OPENAI_API_KEY=your_openai_api_key_here
+ PORT=3000
++
++# Set to "groq" to run the Perception, Decision Synthesizer, and Adversarial Reviewer
++# agents against Groq instead of OpenAI. Leave unset (or "openai") to use OpenAI directly,
++# or set to "openrouter" to use OpenRouter.
++MODEL_PROVIDER=groq
++GROQ_API_KEY=your_groq_api_key_here
++
++# Optional overrides. If omitted, sensible per-agent defaults are used:
++#   Perception (needs vision): meta-llama/llama-4-scout-17b-16e-instruct
++#   Decision Synthesizer / Adversarial Reviewer (text-only, strict JSON schema): openai/gpt-oss-20b
++# GROQ_MODEL=
++# GROQ_PERCEPTION_MODEL=
++# GROQ_SYNTHESIZER_MODEL=
++# GROQ_REVIEWER_MODEL=
+diff --git a/backend/src/agents/adversarial-reviewer-agent.ts b/backend/src/agents/adversarial-reviewer-agent.ts
+index b7fbe69..03a49a6 100644
+--- a/backend/src/agents/adversarial-reviewer-agent.ts
++++ b/backend/src/agents/adversarial-reviewer-agent.ts
+@@ -111,6 +111,45 @@ export class OpenRouterChatCompletionsDecisionReviewerModel implements DecisionR
+   }
+ }
+ 
++/**
++ * Groq's OpenAI-compatible Chat Completions provider. Same DecisionReviewerModel boundary as the
++ * OpenRouter and OpenAI adapters above — only the transport, endpoint, and provider quirks
++ * differ. Defaults to `openai/gpt-oss-20b`, one of the few models Groq currently supports with
++ * guaranteed `strict: true` structured outputs.
++ */
++export class GroqChatCompletionsDecisionReviewerModel implements DecisionReviewerModel {
++  private readonly apiKey: string | undefined;
++  private readonly model: string;
++  private readonly fetchImpl: typeof fetch;
++  constructor(
++    apiKey = process.env.GROQ_API_KEY,
++    model = process.env.GROQ_REVIEWER_MODEL ?? process.env.GROQ_MODEL ?? "openai/gpt-oss-20b",
++    fetchImpl: typeof fetch = fetch
++  ) {
++    this.apiKey = apiKey;
++    this.model = model;
++    this.fetchImpl = fetchImpl;
++  }
++
++  async review(request: DecisionReviewerRequest): Promise<unknown> {
++    if (!this.apiKey) throw new Error("GROQ_API_KEY is required to run the real Adversarial Reviewer Agent via Groq.");
++    const response = await this.fetchImpl("https://api.groq.com/openai/v1/chat/completions", {
++      method: "POST",
++      headers: { "authorization": `Bearer ${this.apiKey}`, "content-type": "application/json" },
++      body: JSON.stringify({
++        model: this.model,
++        messages: [{ role: "system", content: request.instructions }, { role: "user", content: JSON.stringify(request.state) }],
++        response_format: { type: "json_schema", json_schema: { name: "decision_review", strict: true, schema: responseSchema } }
++      })
++    });
++    if (!response.ok) throw new Error(`Adversarial Reviewer model request failed (${response.status}): ${await response.text()}`);
++    const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
++    const outputText = payload.choices?.[0]?.message?.content;
++    if (!outputText) throw new Error("Adversarial Reviewer model returned no structured output.");
++    return JSON.parse(extractJsonPayload(outputText));
++  }
++}
++
+ /**
+  * A real, provider-agnostic Adversarial Reviewer. Tests inject a deterministic fake model.
+  *
+diff --git a/backend/src/agents/decision-synthesizer-agent.ts b/backend/src/agents/decision-synthesizer-agent.ts
+index 235dfa8..10558c1 100644
+--- a/backend/src/agents/decision-synthesizer-agent.ts
++++ b/backend/src/agents/decision-synthesizer-agent.ts
+@@ -140,6 +140,50 @@ export class OpenRouterChatCompletionsDecisionSynthesizerModel implements Decisi
+   }
+ }
+ 
++/**
++ * Groq's OpenAI-compatible Chat Completions provider. Same DecisionSynthesizerModel boundary as
++ * the OpenRouter and OpenAI adapters above — only the transport, endpoint, and provider quirks
++ * differ. Defaults to `openai/gpt-oss-20b`, one of the few models Groq currently supports with
++ * guaranteed `strict: true` structured outputs, so no free-text/markdown recovery is required in
++ * the common case (the fence-stripping fallback below still runs as a safety net).
++ */
++export class GroqChatCompletionsDecisionSynthesizerModel implements DecisionSynthesizerModel {
++  private readonly apiKey: string | undefined;
++  private readonly model: string;
++  private readonly fetchImpl: typeof fetch;
++  constructor(
++    apiKey = process.env.GROQ_API_KEY,
++    model = process.env.GROQ_SYNTHESIZER_MODEL ?? process.env.GROQ_MODEL ?? "openai/gpt-oss-20b",
++    fetchImpl: typeof fetch = fetch
++  ) {
++    this.apiKey = apiKey;
++    this.model = model;
++    this.fetchImpl = fetchImpl;
++  }
++
++  async synthesize(request: DecisionSynthesizerRequest): Promise<unknown> {
++    if (!this.apiKey) throw new Error("GROQ_API_KEY is required to run the real Decision Synthesizer Agent via Groq.");
++    const response = await this.fetchImpl("https://api.groq.com/openai/v1/chat/completions", {
++      method: "POST",
++      headers: { "authorization": `Bearer ${this.apiKey}`, "content-type": "application/json" },
++      body: JSON.stringify({
++        model: this.model,
++        messages: [
++          { role: "system", content: `${request.instructions}\n\n${OPENROUTER_SYNTHESIS_JSON_SHAPE_REINFORCEMENT}` },
++          { role: "user", content: JSON.stringify(request.state) },
++          { role: "user", content: "Reminder: reply with only the required decision_synthesis JSON object using exactly the required keys. No other text." }
++        ],
++        response_format: { type: "json_schema", json_schema: { name: "decision_synthesis", strict: true, schema: responseSchema } }
++      })
++    });
++    if (!response.ok) throw new Error(`Decision Synthesizer model request failed (${response.status}): ${await response.text()}`);
++    const payload = await response.json() as { choices?: Array<{ message?: OpenRouterSynthesizerMessage }> };
++    const outputText = extractOpenRouterMessageText(payload.choices?.[0]?.message);
++    if (!outputText) throw new Error("Decision Synthesizer model returned no structured output.");
++    return parseDecisionSynthesisJson(outputText);
++  }
++}
++
+ /** A real, provider-agnostic model boundary. Tests inject a deterministic fake model. */
+ export class RealDecisionSynthesizerAgent implements Synthesizer {
+   private readonly model: DecisionSynthesizerModel;
+diff --git a/backend/src/agents/perception-agent.ts b/backend/src/agents/perception-agent.ts
+index 3c5d095..1eaa906 100644
+--- a/backend/src/agents/perception-agent.ts
++++ b/backend/src/agents/perception-agent.ts
+@@ -157,6 +157,55 @@ export class OpenRouterChatCompletionsPerceptionModel implements PerceptionModel
+   }
+ }
+ 
++/**
++ * Groq's OpenAI-compatible Chat Completions provider. Same PerceptionModel boundary as the
++ * OpenRouter and OpenAI adapters above — only the transport, endpoint, and provider quirks
++ * differ. Defaults to a Groq-hosted vision-capable Llama 4 model, since this agent needs to
++ * read images. Groq does not currently guarantee strict `response_format: json_schema` on any
++ * vision-capable model, so this adapter asks for `json_object` mode instead and leans on the
++ * same explicit JSON-shape reinforcement text and markdown-fence-stripping fallback used by the
++ * OpenRouter adapter to recover a clean JSON payload.
++ */
++export class GroqChatCompletionsPerceptionModel implements PerceptionModel {
++  private readonly apiKey: string | undefined;
++  private readonly model: string;
++  private readonly fetchImpl: typeof fetch;
++  constructor(
++    apiKey = process.env.GROQ_API_KEY,
++    model = process.env.GROQ_PERCEPTION_MODEL ?? process.env.GROQ_MODEL ?? "meta-llama/llama-4-scout-17b-16e-instruct",
++    fetchImpl: typeof fetch = fetch
++  ) {
++    this.apiKey = apiKey;
++    this.model = model;
++    this.fetchImpl = fetchImpl;
++  }
++
++  async observe(request: PerceptionModelRequest): Promise<PerceptionModelResult> {
++    if (!this.apiKey) throw new Error("GROQ_API_KEY is required to run the real Perception Agent via Groq.");
++    const content = request.content.map(part => part.type === "input_text"
++      ? { type: "text" as const, text: part.text }
++      : { type: "image_url" as const, image_url: { url: part.image_url, detail: part.detail } });
++    const response = await this.fetchImpl("https://api.groq.com/openai/v1/chat/completions", {
++      method: "POST",
++      headers: { "authorization": `Bearer ${this.apiKey}`, "content-type": "application/json" },
++      body: JSON.stringify({
++        model: this.model,
++        messages: [
++          { role: "system", content: `${request.instructions}\n\n${OPENROUTER_JSON_SHAPE_REINFORCEMENT}` },
++          { role: "user", content },
++          { role: "user", content: [{ type: "text", text: OPENROUTER_JSON_SHAPE_USER_REMINDER }] }
++        ],
++        response_format: { type: "json_object" }
++      })
++    });
++    if (!response.ok) throw new Error(`Perception model request failed (${response.status}): ${await response.text()}`);
++    const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
++    const outputText = payload.choices?.[0]?.message?.content;
++    if (!outputText) throw new Error("Perception model returned no structured output.");
++    return validatePerceptionResult(parsePerceptionJson(outputText));
++  }
++}
++
+ export class RealPerceptionAgent implements PerceptionAgent {
+   private readonly model: PerceptionModel;
+   constructor(model: PerceptionModel) { this.model = model; }
+diff --git a/backend/src/orchestrator/decision-orchestrator.ts b/backend/src/orchestrator/decision-orchestrator.ts
+index e4f6ee7..8df5ee6 100644
+--- a/backend/src/orchestrator/decision-orchestrator.ts
++++ b/backend/src/orchestrator/decision-orchestrator.ts
+@@ -17,6 +17,7 @@ import type {
+ } from "../agents/mocks.ts";
+ 
+ import {
++  GroqChatCompletionsPerceptionModel,
+   OpenAIResponsesPerceptionModel,
+   OpenRouterChatCompletionsPerceptionModel,
+   PerceptionProviderFormatError,
+@@ -25,6 +26,7 @@ import {
+ } from "../agents/perception-agent.ts";
+ 
+ import {
++  GroqChatCompletionsDecisionSynthesizerModel,
+   OpenAIResponsesDecisionSynthesizerModel,
+   OpenRouterChatCompletionsDecisionSynthesizerModel,
+   RealDecisionSynthesizerAgent,
+@@ -32,6 +34,7 @@ import {
+ } from "../agents/decision-synthesizer-agent.ts";
+ 
+ import {
++  GroqChatCompletionsDecisionReviewerModel,
+   OpenAIResponsesDecisionReviewerModel,
+   OpenRouterChatCompletionsDecisionReviewerModel,
+   RealAdversarialReviewerAgent,
+@@ -798,21 +801,21 @@ const modelProvider =
+   process.env.MODEL_PROVIDER ?? "openai";
+ 
+ function defaultPerceptionModel(): PerceptionModel {
+-  return modelProvider === "openrouter"
+-    ? new OpenRouterChatCompletionsPerceptionModel()
+-    : new OpenAIResponsesPerceptionModel();
++  if (modelProvider === "groq") return new GroqChatCompletionsPerceptionModel();
++  if (modelProvider === "openrouter") return new OpenRouterChatCompletionsPerceptionModel();
++  return new OpenAIResponsesPerceptionModel();
+ }
+ 
+ function defaultSynthesizerModel(): DecisionSynthesizerModel {
+-  return modelProvider === "openrouter"
+-    ? new OpenRouterChatCompletionsDecisionSynthesizerModel()
+-    : new OpenAIResponsesDecisionSynthesizerModel();
++  if (modelProvider === "groq") return new GroqChatCompletionsDecisionSynthesizerModel();
++  if (modelProvider === "openrouter") return new OpenRouterChatCompletionsDecisionSynthesizerModel();
++  return new OpenAIResponsesDecisionSynthesizerModel();
+ }
+ 
+ function defaultReviewerModel(): DecisionReviewerModel {
+-  return modelProvider === "openrouter"
+-    ? new OpenRouterChatCompletionsDecisionReviewerModel()
+-    : new OpenAIResponsesDecisionReviewerModel();
++  if (modelProvider === "groq") return new GroqChatCompletionsDecisionReviewerModel();
++  if (modelProvider === "openrouter") return new OpenRouterChatCompletionsDecisionReviewerModel();
++  return new OpenAIResponsesDecisionReviewerModel();
+ }
+ 
+ // =============================================================

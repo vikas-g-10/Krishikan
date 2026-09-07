@@ -17,6 +17,7 @@ import type {
 } from "../agents/mocks.ts";
 
 import {
+  GroqChatCompletionsPerceptionModel,
   OpenAIResponsesPerceptionModel,
   OpenRouterChatCompletionsPerceptionModel,
   PerceptionProviderFormatError,
@@ -25,6 +26,7 @@ import {
 } from "../agents/perception-agent.ts";
 
 import {
+  GroqChatCompletionsDecisionSynthesizerModel,
   OpenAIResponsesDecisionSynthesizerModel,
   OpenRouterChatCompletionsDecisionSynthesizerModel,
   RealDecisionSynthesizerAgent,
@@ -32,6 +34,7 @@ import {
 } from "../agents/decision-synthesizer-agent.ts";
 
 import {
+  GroqChatCompletionsDecisionReviewerModel,
   OpenAIResponsesDecisionReviewerModel,
   OpenRouterChatCompletionsDecisionReviewerModel,
   RealAdversarialReviewerAgent,
@@ -798,21 +801,21 @@ const modelProvider =
   process.env.MODEL_PROVIDER ?? "openai";
 
 function defaultPerceptionModel(): PerceptionModel {
-  return modelProvider === "openrouter"
-    ? new OpenRouterChatCompletionsPerceptionModel()
-    : new OpenAIResponsesPerceptionModel();
+  if (modelProvider === "groq") return new GroqChatCompletionsPerceptionModel();
+  if (modelProvider === "openrouter") return new OpenRouterChatCompletionsPerceptionModel();
+  return new OpenAIResponsesPerceptionModel();
 }
 
 function defaultSynthesizerModel(): DecisionSynthesizerModel {
-  return modelProvider === "openrouter"
-    ? new OpenRouterChatCompletionsDecisionSynthesizerModel()
-    : new OpenAIResponsesDecisionSynthesizerModel();
+  if (modelProvider === "groq") return new GroqChatCompletionsDecisionSynthesizerModel();
+  if (modelProvider === "openrouter") return new OpenRouterChatCompletionsDecisionSynthesizerModel();
+  return new OpenAIResponsesDecisionSynthesizerModel();
 }
 
 function defaultReviewerModel(): DecisionReviewerModel {
-  return modelProvider === "openrouter"
-    ? new OpenRouterChatCompletionsDecisionReviewerModel()
-    : new OpenAIResponsesDecisionReviewerModel();
+  if (modelProvider === "groq") return new GroqChatCompletionsDecisionReviewerModel();
+  if (modelProvider === "openrouter") return new OpenRouterChatCompletionsDecisionReviewerModel();
+  return new OpenAIResponsesDecisionReviewerModel();
 }
 
 // =============================================================

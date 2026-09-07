@@ -112,6 +112,45 @@ export class OpenRouterChatCompletionsDecisionReviewerModel implements DecisionR
 }
 
 /**
+ * Groq's OpenAI-compatible Chat Completions provider. Same DecisionReviewerModel boundary as the
+ * OpenRouter and OpenAI adapters above — only the transport, endpoint, and provider quirks
+ * differ. Defaults to `openai/gpt-oss-20b`, one of the few models Groq currently supports with
+ * guaranteed `strict: true` structured outputs.
+ */
+export class GroqChatCompletionsDecisionReviewerModel implements DecisionReviewerModel {
+  private readonly apiKey: string | undefined;
+  private readonly model: string;
+  private readonly fetchImpl: typeof fetch;
+  constructor(
+    apiKey = process.env.GROQ_API_KEY,
+    model = process.env.GROQ_REVIEWER_MODEL ?? process.env.GROQ_MODEL ?? "openai/gpt-oss-20b",
+    fetchImpl: typeof fetch = fetch
+  ) {
+    this.apiKey = apiKey;
+    this.model = model;
+    this.fetchImpl = fetchImpl;
+  }
+
+  async review(request: DecisionReviewerRequest): Promise<unknown> {
+    if (!this.apiKey) throw new Error("GROQ_API_KEY is required to run the real Adversarial Reviewer Agent via Groq.");
+    const response = await this.fetchImpl("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: { "authorization": `Bearer ${this.apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        model: this.model,
+        messages: [{ role: "system", content: request.instructions }, { role: "user", content: JSON.stringify(request.state) }],
+        response_format: { type: "json_schema", json_schema: { name: "decision_review", strict: true, schema: responseSchema } }
+      })
+    });
+    if (!response.ok) throw new Error(`Adversarial Reviewer model request failed (${response.status}): ${await response.text()}`);
+    const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+    const outputText = payload.choices?.[0]?.message?.content;
+    if (!outputText) throw new Error("Adversarial Reviewer model returned no structured output.");
+    return JSON.parse(extractJsonPayload(outputText));
+  }
+}
+
+/**
  * A real, provider-agnostic Adversarial Reviewer. Tests inject a deterministic fake model.
  *
  * Deterministic backstops run before (and instead of, when they fire) the model call, and are what

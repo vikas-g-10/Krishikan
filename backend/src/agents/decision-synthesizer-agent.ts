@@ -140,6 +140,50 @@ export class OpenRouterChatCompletionsDecisionSynthesizerModel implements Decisi
   }
 }
 
+/**
+ * Groq's OpenAI-compatible Chat Completions provider. Same DecisionSynthesizerModel boundary as
+ * the OpenRouter and OpenAI adapters above — only the transport, endpoint, and provider quirks
+ * differ. Defaults to `openai/gpt-oss-20b`, one of the few models Groq currently supports with
+ * guaranteed `strict: true` structured outputs, so no free-text/markdown recovery is required in
+ * the common case (the fence-stripping fallback below still runs as a safety net).
+ */
+export class GroqChatCompletionsDecisionSynthesizerModel implements DecisionSynthesizerModel {
+  private readonly apiKey: string | undefined;
+  private readonly model: string;
+  private readonly fetchImpl: typeof fetch;
+  constructor(
+    apiKey = process.env.GROQ_API_KEY,
+    model = process.env.GROQ_SYNTHESIZER_MODEL ?? process.env.GROQ_MODEL ?? "openai/gpt-oss-20b",
+    fetchImpl: typeof fetch = fetch
+  ) {
+    this.apiKey = apiKey;
+    this.model = model;
+    this.fetchImpl = fetchImpl;
+  }
+
+  async synthesize(request: DecisionSynthesizerRequest): Promise<unknown> {
+    if (!this.apiKey) throw new Error("GROQ_API_KEY is required to run the real Decision Synthesizer Agent via Groq.");
+    const response = await this.fetchImpl("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: { "authorization": `Bearer ${this.apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        model: this.model,
+        messages: [
+          { role: "system", content: `${request.instructions}\n\n${OPENROUTER_SYNTHESIS_JSON_SHAPE_REINFORCEMENT}` },
+          { role: "user", content: JSON.stringify(request.state) },
+          { role: "user", content: "Reminder: reply with only the required decision_synthesis JSON object using exactly the required keys. No other text." }
+        ],
+        response_format: { type: "json_schema", json_schema: { name: "decision_synthesis", strict: true, schema: responseSchema } }
+      })
+    });
+    if (!response.ok) throw new Error(`Decision Synthesizer model request failed (${response.status}): ${await response.text()}`);
+    const payload = await response.json() as { choices?: Array<{ message?: OpenRouterSynthesizerMessage }> };
+    const outputText = extractOpenRouterMessageText(payload.choices?.[0]?.message);
+    if (!outputText) throw new Error("Decision Synthesizer model returned no structured output.");
+    return parseDecisionSynthesisJson(outputText);
+  }
+}
+
 /** A real, provider-agnostic model boundary. Tests inject a deterministic fake model. */
 export class RealDecisionSynthesizerAgent implements Synthesizer {
   private readonly model: DecisionSynthesizerModel;
