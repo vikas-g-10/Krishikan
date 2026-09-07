@@ -5,7 +5,13 @@ import type { AgricultureTools } from "../tools/seeded-tools.ts";
 export interface DecisionSynthesizerRequest {
   instructions: string;
   state: {
-    perception: CaseState["observations"];
+    // Deliberately excludes `images`: the raw base64/data-URL photo payload the farmer uploaded.
+    // The Perception Agent has already reduced those images to visualFindings/symptomFindings/
+    // uncertainties by this point, so the Decision Synthesizer only ever needs that distilled
+    // text — forwarding the raw images too was inflating this request to 80,000+ tokens and
+    // blowing past provider per-minute token limits for no benefit, since the model cannot use
+    // the raw image bytes embedded in JSON as an actual image input anyway.
+    perception: Omit<CaseState["observations"], "images">;
     context: CaseState["context"];
     risk: CaseState["risk"];
     economics: CaseState["economics"];
@@ -209,9 +215,10 @@ export class RealDecisionSynthesizerAgent implements Synthesizer {
       return { action: "WAIT_FOR_SAFE_WEATHER_WINDOW", reason: "Current risk is low; the deterministic economic gate calls for waiting rather than intervening or merely monitoring.", reasoningSummary: state.economics.economicJustification, evidence: [...state.risk.factors, state.economics.economicJustification], confidence: 0.8, constraints: [...state.workflow.negativeConstraints], uncertainties: [...state.risk.flags], missingData: [] };
     }
     const vettedInterventions = await this.agriculture.getAvailableInterventions(state.farm!.crop, state.farm!.cropStage);
+    const { images: _images, ...perceptionWithoutImages } = state.observations;
     const request: DecisionSynthesizerRequest = {
       instructions,
-      state: { perception: state.observations, context: state.context, risk: state.risk, economics: state.economics, history: state.history!, negativeConstraints: [...state.workflow.negativeConstraints], vettedInterventions: vettedInterventions.map(({ id, action, foliar, compatibleStages }) => ({ id, action, foliar, compatibleStages })) }
+      state: { perception: perceptionWithoutImages, context: state.context, risk: state.risk, economics: state.economics, history: state.history!, negativeConstraints: [...state.workflow.negativeConstraints], vettedInterventions: vettedInterventions.map(({ id, action, foliar, compatibleStages }) => ({ id, action, foliar, compatibleStages })) }
     };
     return validateProposal(await this.model.synthesize(request), state, vettedInterventions);
   }

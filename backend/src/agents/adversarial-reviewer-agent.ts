@@ -5,7 +5,10 @@ export interface DecisionReviewerRequest {
   instructions: string;
   state: {
     proposal: ProposedDecision;
-    perception: CaseState["observations"];
+    // Deliberately excludes `images`: see the matching comment in decision-synthesizer-agent.ts.
+    // The reviewer only ever needs the Perception Agent's distilled text findings, not the raw
+    // photo payload, which was inflating this request past provider per-minute token limits.
+    perception: Omit<CaseState["observations"], "images">;
     context: CaseState["context"];
     risk: CaseState["risk"];
     economics: CaseState["economics"];
@@ -179,11 +182,12 @@ export class RealAdversarialReviewerAgent implements Reviewer {
     const backstop = deterministicVeto(state, proposal);
     if (backstop) return { ...backstop, cycleCount };
 
+    const { images: _images, ...perceptionWithoutImages } = state.observations;
     const request: DecisionReviewerRequest = {
       instructions,
       state: {
         proposal,
-        perception: state.observations,
+        perception: perceptionWithoutImages,
         context: state.context,
         risk: state.risk,
         economics: state.economics,
